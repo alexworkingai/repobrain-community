@@ -96,7 +96,7 @@ jobs:
 
       - uses: actions/github-script@v7
         id: checkout_ref
-        if: steps.cmd_gate.outputs.supported == '1'
+        if: always()
         with:
           script: |
             let ref = context.sha;
@@ -137,25 +137,64 @@ jobs:
             core.setOutput("reason", reason);
 
       - name: Checkout caller repository
-        if: steps.cmd_gate.outputs.supported == '1'
+        if: always()
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.checkout_ref.outputs.ref }}
 
-      - name: Run RepoBrain Action (external GitHub foundation)
+      - name: Checkout RepoBrain engine runtime
         if: steps.cmd_gate.outputs.supported == '1'
-        uses: alexworkingai/RepoBrain-Action@main
-        with:
-          tky_mode: "auto"
-          dry_run: ${{ inputs.dry_run }}
-          comment_text: ${{ inputs.comment_text }}
-          issue_number: ${{ inputs.issue_number }}
-
-      - name: Checkout RepoBrain tooling for readiness artifacts
-        if: always()
         uses: actions/checkout@v4
         with:
-          repository: alexworkingai/RepoBrain-Action
+          repository: alexworkingai/repobrain-action
+          ref: main
+          path: .repobrain_action
+
+      - name: Setup Python for RepoBrain runtime
+        if: steps.cmd_gate.outputs.supported == '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install RepoBrain runtime dependencies
+        if: steps.cmd_gate.outputs.supported == '1'
+        shell: bash
+        run: |
+          python -m pip install -U pip
+          pip install -e ".repobrain_action[dev]"
+
+      - name: Run RepoBrain command runtime (external GitHub foundation)
+        if: steps.cmd_gate.outputs.supported == '1'
+        shell: bash
+        env:
+          RB_TKYA_BACKEND: "v5"
+          RB_TKYA_ALLOW_REMOTE: "0"
+          RB_TKYA_STRICT: "0"
+          RB_DISABLE_INTERNAL_REACTIONS: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ inputs.caller_event_name }}
+        run: |
+          python .repobrain_action/scripts/run_github.py \
+            --dry-run "${{ inputs.dry_run }}" \
+            --issue-number "${{ inputs.issue_number }}" \
+            --tky-mode "auto" \
+            --comment-text "${{ inputs.comment_text }}"
+
+      - name: Generate RepoBrain TKYA evidence pack
+        if: steps.cmd_gate.outputs.supported == '1'
+        shell: bash
+        run: |
+          python .repobrain_action/scripts/gen_tkya_evidence_pack.py \
+            --audit-dir artifacts/audit \
+            --output-dir artifacts/evidence_pack
+
+      - name: Ensure RepoBrain tooling checkout for readiness artifacts
+        if: always() && steps.cmd_gate.outputs.supported != '1'
+        # Re-checkout only when command path did not run and tooling dir is absent.
+        # This keeps readiness generation available on unsupported-command path too.
+        uses: actions/checkout@v4
+        with:
+          repository: alexworkingai/repobrain-action
           ref: main
           path: .repobrain_action
 
