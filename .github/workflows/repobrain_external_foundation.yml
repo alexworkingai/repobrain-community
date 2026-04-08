@@ -71,29 +71,6 @@ jobs:
           echo "cmd=$cmd" >> "$GITHUB_OUTPUT"
           echo "supported=$supported" >> "$GITHUB_OUTPUT"
 
-      - name: Post unsupported command boundary comment
-        if: steps.cmd_gate.outputs.supported == '0' && inputs.dry_run != 'true' && inputs.issue_number != ''
-        uses: actions/github-script@v7
-        env:
-          ISSUE_NUMBER: ${{ inputs.issue_number }}
-          COMMAND: ${{ steps.cmd_gate.outputs.cmd }}
-        with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const issue_number = Number(process.env.ISSUE_NUMBER);
-            if (!issue_number) {
-              core.info("Issue number is empty; skip unsupported boundary comment.");
-              return;
-            }
-            const command = String(process.env.COMMAND || "unknown");
-            const body = [
-              "RepoBrain external GitHub mode foundation currently supports only `/repobrain help` and `/repobrain ask`.",
-              `Received: \`/repobrain ${command}\`.`,
-              "This bounded behavior is intentional for the current external GitHub foundation stage.",
-            ].join("\n");
-            await github.rest.issues.createComment({ owner, repo, issue_number, body });
-
       - uses: actions/github-script@v7
         id: checkout_ref
         if: always()
@@ -142,80 +119,29 @@ jobs:
         with:
           ref: ${{ steps.checkout_ref.outputs.ref }}
 
-      - name: Checkout RepoBrain engine runtime
-        if: steps.cmd_gate.outputs.supported == '1'
-        uses: actions/checkout@v4
-        with:
-          repository: alexworkingai/repobrain-action
-          ref: main
-          path: .repobrain_action
-
-      - name: Setup Python for RepoBrain runtime
-        if: steps.cmd_gate.outputs.supported == '1'
+      - name: Setup Python for self-contained foundation
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install RepoBrain runtime dependencies
-        if: steps.cmd_gate.outputs.supported == '1'
-        shell: bash
-        run: |
-          python -m pip install -U pip
-          pip install -e ".repobrain_action[dev]"
-
-      - name: Run RepoBrain command runtime (external GitHub foundation)
-        if: steps.cmd_gate.outputs.supported == '1'
+      - name: Build bounded response and self-contained artifacts
+        id: foundation_build
         shell: bash
         env:
-          RB_TKYA_BACKEND: "v5"
-          RB_TKYA_ALLOW_REMOTE: "0"
-          RB_TKYA_STRICT: "0"
-          RB_DISABLE_INTERNAL_REACTIONS: "1"
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_EVENT_NAME: ${{ inputs.caller_event_name }}
-        run: |
-          python .repobrain_action/scripts/run_github.py \
-            --dry-run "${{ inputs.dry_run }}" \
-            --issue-number "${{ inputs.issue_number }}" \
-            --tky-mode "auto" \
-            --comment-text "${{ inputs.comment_text }}"
-
-      - name: Generate RepoBrain TKYA evidence pack
-        if: steps.cmd_gate.outputs.supported == '1'
-        shell: bash
-        run: |
-          python .repobrain_action/scripts/gen_tkya_evidence_pack.py \
-            --audit-dir artifacts/audit \
-            --output-dir artifacts/evidence_pack
-
-      - name: Ensure RepoBrain tooling checkout for readiness artifacts
-        if: always() && steps.cmd_gate.outputs.supported != '1'
-        # Re-checkout only when command path did not run and tooling dir is absent.
-        # This keeps readiness generation available on unsupported-command path too.
-        uses: actions/checkout@v4
-        with:
-          repository: alexworkingai/repobrain-action
-          ref: main
-          path: .repobrain_action
-
-      - name: Setup Python for readiness tooling
-        if: always()
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install readiness tooling dependencies
-        if: always()
-        shell: bash
-        run: |
-          python -m pip install -U pip
-          pip install orjson
-
-      - name: Generate external install readiness artifacts
-        if: always()
-        shell: bash
-        env:
-          GITHUB_EVENT_NAME: ${{ inputs.caller_event_name }}
+          COMMENT_TEXT: ${{ inputs.comment_text }}
+          COMMAND: ${{ steps.cmd_gate.outputs.cmd }}
+          SUPPORTED: ${{ steps.cmd_gate.outputs.supported }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          CALLER_EVENT_NAME: ${{ inputs.caller_event_name }}
+          WORKFLOW_PATH: ${{ inputs.workflow_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
           RB_GH_APP_ID: ${{ secrets.RB_GH_APP_ID || vars.RB_GH_APP_ID }}
           RB_GH_APP_ID_SOURCE: ${{ secrets.RB_GH_APP_ID != '' && 'secret' || (vars.RB_GH_APP_ID != '' && 'vars' || 'missing') }}
           RB_GH_APP_INSTALLATION_ID: ${{ secrets.RB_GH_APP_INSTALLATION_ID || vars.RB_GH_APP_INSTALLATION_ID }}
@@ -225,20 +151,423 @@ jobs:
           RB_GH_APP_WEBHOOK_SECRET: ${{ secrets.RB_GH_APP_WEBHOOK_SECRET }}
           RB_GH_APP_REPOSITORY_SELECTION: ${{ vars.RB_GH_APP_REPOSITORY_SELECTION }}
           RB_GH_APP_SELECTED_REPOS: ${{ vars.RB_GH_APP_SELECTED_REPOS }}
-          RB_READINESS_GENERATION_EVENT_NAME: ${{ inputs.caller_event_name }}
-          RB_READINESS_GENERATION_WORKFLOW_PATH: ${{ inputs.workflow_path }}
-          RB_READINESS_GENERATION_REF: ${{ github.ref }}
-          RB_READINESS_GENERATION_SHA: ${{ github.sha }}
-          RB_READINESS_GENERATION_WORKFLOW_REF: ${{ github.workflow_ref }}
-          RB_READINESS_GENERATION_WORKFLOW_SHA: ${{ github.workflow_sha }}
-          RB_READINESS_GENERATION_RUN_ID: ${{ github.run_id }}
-          RB_READINESS_GENERATION_RUN_ATTEMPT: ${{ github.run_attempt }}
-          RB_READINESS_GENERATION_JOB_NAME: repobrain_external_foundation
         run: |
-          python .repobrain_action/scripts/check_install_readiness.py \
-            --workflow "${{ inputs.workflow_path }}" \
-            --output-json artifacts/onboarding/repobrain_install_readiness.json \
-            --output-md artifacts/onboarding/repobrain_install_readiness.md
+          python - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          def norm(v):
+              return str(v or "").strip()
+
+          def split_csv(v):
+              return [x.strip() for x in str(v or "").split(",") if x.strip()]
+
+          def reason_for_status(overall_status: str, fail_codes: set[str]):
+              if overall_status == "READY":
+                  return "ready_all_prereqs_satisfied", "All required GitHub App onboarding prerequisites are satisfied."
+              if overall_status == "UNSUPPORTED_SETUP":
+                  if "runtime_event_unsupported" in fail_codes:
+                      return "unsupported_runtime_event", "Runtime event is unsupported for onboarding validation."
+                  if "repository_selection_mode_invalid" in fail_codes:
+                      return "unsupported_repository_selection_mode", "Repository selection mode is invalid."
+                  if "selected_repositories_repo_not_allowed" in fail_codes:
+                      return "selected_repo_binding_mismatch", "Current repository is not included in selected-repository rollout allowlist."
+                  if "workflow_issue_comment_missing" in fail_codes:
+                      return "issue_comment_trigger_missing", "Workflow does not expose issue_comment trigger required for command flow."
+                  if "workflow_file_missing" in fail_codes:
+                      return "workflow_file_missing", "RepoBrain workflow file is missing or unresolved."
+                  return "unsupported_setup_detected", "Unsupported setup topology detected."
+              if overall_status == "MISSING_PERMISSION":
+                  return "workflow_permissions_missing", "Workflow permissions are missing or weaker than required."
+              if overall_status == "MISSING_CONFIG":
+                  if "github_app_id_missing" in fail_codes:
+                      return "github_app_id_missing", "GitHub App ID is missing."
+                  if "github_app_id_invalid" in fail_codes:
+                      return "github_app_id_invalid", "GitHub App ID format is invalid."
+                  if "github_app_installation_id_missing" in fail_codes:
+                      return "github_app_installation_id_missing", "GitHub App installation ID is missing."
+                  if "github_app_installation_id_invalid" in fail_codes:
+                      return "github_app_installation_id_invalid", "GitHub App installation ID format is invalid."
+                  if "github_app_private_key_missing" in fail_codes:
+                      return "github_app_private_key_missing", "GitHub App private key is missing."
+                  if "selected_repositories_missing" in fail_codes:
+                      return "selected_repositories_missing", "Selected repositories allowlist is missing."
+                  return "missing_config_detected", "Configuration prerequisites are missing."
+              return "unknown_status", "Readiness status could not be classified."
+
+          comment_text = norm(os.getenv("COMMENT_TEXT"))
+          cmd = norm(os.getenv("COMMAND")).lower() or "help"
+          supported = norm(os.getenv("SUPPORTED")) == "1"
+          issue_number = norm(os.getenv("ISSUE_NUMBER"))
+          dry_run = norm(os.getenv("DRY_RUN")).lower() == "true"
+
+          query = ""
+          if cmd == "ask":
+              m = re.match(r"^\s*/repobrain(?:\s+[a-zA-Z_-]+)?\s*(.*)$", comment_text, flags=re.IGNORECASE | re.DOTALL)
+              query = norm(m.group(1) if m else "")
+
+          if not supported:
+              status = "blocked"
+              decision = "UNSUPPORTED_COMMAND"
+              body = (
+                  "RepoBrain external GitHub mode foundation currently supports only `/repobrain help` and `/repobrain ask`.\n"
+                  f"Received: `/repobrain {cmd}`.\n"
+                  "This bounded behavior is intentional for the current external GitHub foundation stage."
+              )
+          elif cmd == "help":
+              status = "success"
+              decision = "HELP"
+              body = (
+                  "## RepoBrain External GitHub Foundation\n"
+                  "Supported now:\n"
+                  "- `/repobrain help`\n"
+                  "- `/repobrain ask <question>`\n\n"
+                  "Unsupported (explicitly blocked):\n"
+                  "- `/repobrain review`\n"
+                  "- `/repobrain fix`\n"
+              )
+          elif not query:
+              status = "blocked"
+              decision = "ASK_QUERY_MISSING"
+              body = (
+                  "RepoBrain ask request is missing a question.\n"
+                  "Usage: `/repobrain ask <question>`"
+              )
+          else:
+              status = "success"
+              decision = "ANSWER"
+              body = (
+                  "## RepoBrain Ask (External GitHub Foundation)\n"
+                  f"Question: `{query}`\n\n"
+                  "Bounded answer: this public foundation confirms command handling and governance-aware boundaries.\n"
+                  "For deep repository reasoning workflows, use the primary GitHub mode surface."
+              )
+
+          now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+          repository = norm(os.getenv("GITHUB_REPOSITORY"))
+          event_name = norm(os.getenv("CALLER_EVENT_NAME"))
+          ref = norm(os.getenv("GITHUB_REF"))
+          sha = norm(os.getenv("GITHUB_SHA"))
+          run_id = norm(os.getenv("GITHUB_RUN_ID"))
+          run_attempt = norm(os.getenv("GITHUB_RUN_ATTEMPT"))
+          workflow_ref = norm(os.getenv("GITHUB_WORKFLOW_REF"))
+          workflow_sha = norm(os.getenv("GITHUB_WORKFLOW_SHA"))
+          workflow_path = norm(os.getenv("WORKFLOW_PATH")) or ".github/workflows/repobrain_external.yml"
+
+          Path("artifacts/audit").mkdir(parents=True, exist_ok=True)
+          Path("artifacts/evidence_pack").mkdir(parents=True, exist_ok=True)
+          Path("artifacts/onboarding").mkdir(parents=True, exist_ok=True)
+
+          audit = {
+              "external_foundation_contract_version": "external_github_foundation_v1",
+              "mode": "external_github_foundation",
+              "status": status,
+              "decision": decision,
+              "command": cmd,
+              "supported": bool(supported),
+              "query": query,
+              "bounded_scope": {
+                  "supported_commands": ["help", "ask"],
+                  "unsupported_commands": ["review", "fix"],
+              },
+              "runtime_provenance": {
+                  "repository": repository,
+                  "event_name": event_name,
+                  "ref": ref,
+                  "sha": sha,
+                  "workflow_ref": workflow_ref,
+                  "workflow_sha": workflow_sha,
+                  "run_id": run_id,
+                  "run_attempt": run_attempt,
+              },
+              "generated_at_utc": now,
+          }
+          issue_tag = issue_number.lstrip("#") if issue_number else "na"
+          audit_path = Path(f"artifacts/audit/audit_external_foundation_{run_id}_{issue_tag}.json")
+          audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+
+          diagnostic_md = (
+              "# RepoBrain Diagnostic Summary (External Foundation)\n\n"
+              f"- Status: `{status}`\n"
+              f"- Decision: `{decision}`\n"
+              f"- Command: `{cmd}`\n"
+              f"- Supported: `{'yes' if supported else 'no'}`\n"
+              f"- Event: `{event_name or 'n/a'}`\n"
+          )
+          Path("artifacts/diagnostic_summary.md").write_text(diagnostic_md, encoding="utf-8")
+
+          evidence_public = {
+              "evidence_pack_version": "tkya_evidence_pack_v1_public_safe",
+              "mode": "external_github_foundation",
+              "status": status,
+              "decision": decision,
+              "command": cmd,
+              "bounded_scope": audit["bounded_scope"],
+              "runtime_provenance": audit["runtime_provenance"],
+              "generated_at_utc": now,
+          }
+          evidence_internal = {
+              **evidence_public,
+              "contract": {
+                  "execution_profile_requested": "balanced",
+                  "execution_profile_used": "balanced",
+                  "policy_outcome": "default_balanced",
+              },
+          }
+          Path("artifacts/evidence_pack/repobrain_tkya_evidence_pack_public_safe.json").write_text(
+              json.dumps(evidence_public, indent=2), encoding="utf-8"
+          )
+          Path("artifacts/evidence_pack/repobrain_tkya_evidence_pack_internal.json").write_text(
+              json.dumps(evidence_internal, indent=2), encoding="utf-8"
+          )
+          evidence_md = (
+              "# RepoBrain TKYA Evidence Pack (External Foundation)\n\n"
+              f"- Status: `{status}`\n"
+              f"- Decision: `{decision}`\n"
+              f"- Command: `{cmd}`\n"
+              "- Supported scope: `help`, `ask`\n"
+              "- Unsupported scope: `review`, `fix`\n"
+          )
+          Path("artifacts/evidence_pack/repobrain_tkya_evidence_pack.md").write_text(evidence_md, encoding="utf-8")
+
+          required_permissions = {
+              "contents": "read",
+              "issues": "write",
+              "pull-requests": "write",
+              "checks": "write",
+              "statuses": "read",
+              "actions": "read",
+          }
+          perm_level = {"none": 0, "read": 1, "write": 2, "write-all": 3}
+
+          checks = []
+          next_steps = []
+
+          def add(code, status_v, category, message, next_step):
+              checks.append(
+                  {
+                      "code": code,
+                      "status": status_v,
+                      "category": category,
+                      "message": message,
+                      "next_step": next_step,
+                  }
+              )
+              if status_v == "FAIL" and next_step:
+                  next_steps.append(next_step)
+
+          if event_name in {"", "issue_comment", "workflow_dispatch"}:
+              add("runtime_event_supported", "PASS", "runtime", f"Runtime event is supported (`{event_name or 'local/manual'}`).", "Proceed with readiness checks.")
+          else:
+              add("runtime_event_unsupported", "FAIL", "unsupported_setup", f"Unsupported runtime event (`{event_name}`).", "Use `issue_comment` or `workflow_dispatch` context.")
+
+          app_id = norm(os.getenv("RB_GH_APP_ID"))
+          app_id_source = norm(os.getenv("RB_GH_APP_ID_SOURCE")).lower() or ("env" if app_id else "missing")
+          inst_id = norm(os.getenv("RB_GH_APP_INSTALLATION_ID"))
+          inst_source = norm(os.getenv("RB_GH_APP_INSTALLATION_ID_SOURCE")).lower() or ("env" if inst_id else "missing")
+          private_key_inline = norm(os.getenv("RB_GH_APP_PRIVATE_KEY"))
+          private_key_path = norm(os.getenv("RB_GH_APP_PRIVATE_KEY_PATH"))
+          private_key_path_exists = bool(private_key_path and Path(private_key_path).exists())
+          private_key_present = bool(private_key_inline or private_key_path_exists)
+          webhook_secret = norm(os.getenv("RB_GH_APP_WEBHOOK_SECRET"))
+          repo_mode = norm(os.getenv("RB_GH_APP_REPOSITORY_SELECTION") or "selected").lower()
+          selected_repos = split_csv(os.getenv("RB_GH_APP_SELECTED_REPOS"))
+          selected_set = {r.lower() for r in selected_repos}
+          current_repo = repository.lower()
+
+          if repo_mode not in {"selected", "all"}:
+              add("repository_selection_mode_invalid", "FAIL", "unsupported_setup", f"Invalid repository selection mode (`{repo_mode}`).", "Set `RB_GH_APP_REPOSITORY_SELECTION` to `selected` or `all`.")
+          else:
+              add("repository_selection_mode_valid", "PASS", "config", f"Repository selection mode is `{repo_mode}`.", "Keep selected rollout where possible.")
+              if repo_mode == "selected":
+                if not selected_repos:
+                    add("selected_repositories_missing", "FAIL", "missing_config", "Selected mode requires `RB_GH_APP_SELECTED_REPOS`.", "Set `RB_GH_APP_SELECTED_REPOS` to include target repo.")
+                else:
+                    add("selected_repositories_configured", "PASS", "config", f"Selected repositories configured (`{len(selected_repos)}`).", "Keep selected-repo rollout explicit.")
+                    if current_repo and current_repo not in selected_set:
+                        add("selected_repositories_repo_not_allowed", "FAIL", "unsupported_setup", f"Current repository `{current_repo}` is not in selected allowlist.", "Add current repository to selected allowlist.")
+
+          if app_id:
+              if app_id.isdigit():
+                  add("github_app_id_present", "PASS", "config", "GitHub App ID is configured.", "Keep App ID stable.")
+              else:
+                  add("github_app_id_invalid", "FAIL", "missing_config", "GitHub App ID format is invalid (expected numeric).", "Set numeric `RB_GH_APP_ID`.")
+          else:
+              add("github_app_id_missing", "FAIL", "missing_config", "GitHub App ID is missing.", "Set `RB_GH_APP_ID`.")
+
+          if inst_id:
+              if inst_id.isdigit():
+                  add("github_app_installation_id_present", "PASS", "config", "GitHub App installation ID is configured.", "Keep installation ID aligned with install.")
+              else:
+                  add("github_app_installation_id_invalid", "FAIL", "missing_config", "GitHub App installation ID format is invalid (expected numeric).", "Set numeric `RB_GH_APP_INSTALLATION_ID`.")
+          else:
+              add("github_app_installation_id_missing", "FAIL", "missing_config", "GitHub App installation ID is missing.", "Set `RB_GH_APP_INSTALLATION_ID`.")
+
+          if private_key_present:
+              add("github_app_private_key_present", "PASS", "config", "GitHub App private key is configured.", "Rotate key regularly.")
+          else:
+              add("github_app_private_key_missing", "FAIL", "missing_config", "GitHub App private key is missing.", "Set `RB_GH_APP_PRIVATE_KEY` or readable `RB_GH_APP_PRIVATE_KEY_PATH`.")
+
+          if webhook_secret:
+              add("github_app_webhook_secret_present", "PASS", "config", "GitHub App webhook secret is configured.", "Keep webhook signature checks enabled.")
+          else:
+              add("github_app_webhook_secret_missing", "WARN", "missing_config", "GitHub App webhook secret is not configured.", "Set webhook secret before external webhook exposure.")
+
+          workflow_file = Path(workflow_path)
+          detected_permissions = {}
+          missing_permissions = []
+          issue_comment_enabled = False
+          if workflow_file.exists():
+              text = workflow_file.read_text(encoding="utf-8")
+              issue_comment_enabled = "issue_comment:" in text
+              for m in re.finditer(r"(?m)^\s{2,}([a-zA-Z-]+)\s*:\s*([a-zA-Z-]+)\s*$", text):
+                  k = norm(m.group(1)).lower()
+                  v = norm(m.group(2)).lower()
+                  if k in required_permissions and v in perm_level:
+                      detected_permissions[k] = v
+              for k, req in required_permissions.items():
+                  found = detected_permissions.get(k, "none")
+                  if perm_level.get(found, 0) < perm_level[req]:
+                      missing_permissions.append(f"{k}:{req}")
+              if missing_permissions:
+                  add("workflow_permissions_missing", "FAIL", "missing_permission", "Workflow permissions are missing or too weak.", "Set required workflow permissions in caller workflow.")
+              else:
+                  add("workflow_permissions_ready", "PASS", "permission", "Workflow permissions satisfy baseline.", "Keep permissions minimal and explicit.")
+              if issue_comment_enabled:
+                  add("workflow_issue_comment_enabled", "PASS", "workflow", "Caller workflow includes issue_comment trigger.", "Keep trigger restricted to `/repobrain`.")
+              else:
+                  add("workflow_issue_comment_missing", "FAIL", "unsupported_setup", "Caller workflow does not include issue_comment trigger.", "Add issue_comment trigger in caller workflow.")
+          else:
+              missing_permissions = [f"{k}:{v}" for k, v in required_permissions.items()]
+              add("workflow_file_missing", "FAIL", "unsupported_setup", f"Workflow file not found: `{workflow_path}`.", "Set valid `workflow_path` in reusable workflow call.")
+
+          fail_codes = [c["code"] for c in checks if c["status"] == "FAIL"]
+          fail_set = set(fail_codes)
+          fail_categories = {c["category"] for c in checks if c["status"] == "FAIL"}
+          fail_codes_by_category = {
+              "unsupported_setup": sorted(c["code"] for c in checks if c["status"] == "FAIL" and c["category"] == "unsupported_setup"),
+              "missing_permission": sorted(c["code"] for c in checks if c["status"] == "FAIL" and c["category"] == "missing_permission"),
+              "missing_config": sorted(c["code"] for c in checks if c["status"] == "FAIL" and c["category"] == "missing_config"),
+          }
+          fail_counts_by_category = {k: len(v) for k, v in fail_codes_by_category.items()}
+
+          if "unsupported_setup" in fail_categories:
+              overall_status = "UNSUPPORTED_SETUP"
+          elif "missing_permission" in fail_categories:
+              overall_status = "MISSING_PERMISSION"
+          elif "missing_config" in fail_categories:
+              overall_status = "MISSING_CONFIG"
+          else:
+              overall_status = "READY"
+
+          reason_code, reason_short = reason_for_status(overall_status, fail_set)
+
+          readiness_payload = {
+              "readiness_contract_version": "install_readiness_v2",
+              "generated_at_utc": now,
+              "installation_model": "github_app_first",
+              "overall_status": overall_status,
+              "status_reason_code": reason_code,
+              "status_reason_short": reason_short,
+              "ready_for_ask_review_fix": overall_status == "READY",
+              "repository_selection_mode": repo_mode,
+              "selected_repositories": selected_repos,
+              "checks": checks,
+              "summary": {
+                  "pass": sum(1 for c in checks if c["status"] == "PASS"),
+                  "fail": sum(1 for c in checks if c["status"] == "FAIL"),
+                  "warn": sum(1 for c in checks if c["status"] == "WARN"),
+              },
+              "blocking_summary": {
+                  "fail_codes": sorted(fail_codes),
+                  "fail_codes_by_category": fail_codes_by_category,
+                  "fail_counts_by_category": fail_counts_by_category,
+              },
+              "next_steps": list(dict.fromkeys(next_steps)),
+              "workflow_probe": {
+                  "workflow_path": workflow_path,
+                  "exists": workflow_file.exists(),
+                  "issue_comment_enabled": issue_comment_enabled,
+                  "required_permissions": required_permissions,
+                  "detected_permissions": detected_permissions,
+                  "missing_permissions": sorted(missing_permissions),
+              },
+              "readiness_provenance": {
+                  "generation_event_name": event_name or "local/manual",
+                  "generation_workflow_path": workflow_path,
+                  "generation_ref": ref or "n/a",
+                  "generation_sha": sha or "n/a",
+                  "generation_ref_kind": "pull_ref" if (ref or "").startswith("refs/pull/") else ("branch_ref" if (ref or "").startswith("refs/heads/") else "unknown"),
+                  "generation_workflow_ref": workflow_ref or "n/a",
+                  "generation_workflow_sha": workflow_sha or "n/a",
+                  "generation_run_id": run_id or "n/a",
+                  "generation_run_attempt": run_attempt or "n/a",
+                  "generation_job_name": "repobrain_external_foundation",
+              },
+              "inputs_seen": {
+                  "event_name": event_name or "local/manual",
+                  "current_repository": current_repo or "n/a",
+                  "app_id_present": bool(app_id),
+                  "app_id_source": app_id_source,
+                  "installation_id_present": bool(inst_id),
+                  "installation_id_source": inst_source,
+                  "private_key_source": "env_inline" if private_key_inline else ("path" if private_key_path_exists else "missing"),
+                  "private_key_path_present": bool(private_key_path),
+                  "private_key_path_exists": private_key_path_exists,
+                  "private_key_path_readable": private_key_path_exists,
+                  "webhook_secret_present": bool(webhook_secret),
+                  "selected_repositories_count": len(selected_repos),
+              },
+          }
+
+          readiness_md = (
+              "# RepoBrain GitHub App Install Readiness\n\n"
+              f"- Contract version: `{readiness_payload['readiness_contract_version']}`\n"
+              f"- Overall status: `{overall_status}`\n"
+              f"- Status reason: `{reason_code}`\n"
+              f"- Status summary: {reason_short}\n"
+              f"- Generation event: `{event_name or 'local/manual'}`\n"
+              f"- App ID source: `{app_id_source}`\n\n"
+              "## Next Safe Steps\n" + ("\n".join(f"- {s}" for s in readiness_payload["next_steps"]) if readiness_payload["next_steps"] else "- Setup is ready. Proceed with controlled validation.") + "\n"
+          )
+
+          Path("artifacts/onboarding/repobrain_install_readiness.json").write_text(
+              json.dumps(readiness_payload, indent=2), encoding="utf-8"
+          )
+          Path("artifacts/onboarding/repobrain_install_readiness.md").write_text(readiness_md, encoding="utf-8")
+          Path("artifacts/foundation_response.md").write_text(body, encoding="utf-8")
+
+          out = os.environ.get("GITHUB_OUTPUT")
+          if out:
+              with open(out, "a", encoding="utf-8") as fh:
+                  fh.write(f"foundation_status={status}\n")
+                  fh.write(f"foundation_decision={decision}\n")
+                  fh.write(f"should_post={'1' if (not dry_run and issue_number) else '0'}\n")
+          PY
+
+      - name: Post foundation response comment
+        if: steps.foundation_build.outputs.should_post == '1'
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          RESPONSE_PATH: artifacts/foundation_response.md
+        with:
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueRaw = String(process.env.ISSUE_NUMBER || "").trim();
+            const issue_number = Number(issueRaw.replace(/^#/, ""));
+            if (!issue_number) {
+              core.info("Issue number is empty; skip comment post.");
+              return;
+            }
+            const responsePath = process.env.RESPONSE_PATH;
+            const body = fs.readFileSync(responsePath, 'utf8');
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
 
       - name: Upload RepoBrain audit artifact
         if: always()

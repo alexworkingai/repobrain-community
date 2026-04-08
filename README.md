@@ -15,6 +15,7 @@ It does not expose protected internal kernel details.
 Reusable workflow host:
 
 - `.github/workflows/repobrain_external_foundation.yml`
+- self-contained public host workflow (no runtime dependency on RepoBrain-Action)
 
 Current bounded contract:
 
