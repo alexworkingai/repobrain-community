@@ -1,4 +1,4 @@
-name: RepoBrain External GitHub Foundation
+﻿name: RepoBrain External GitHub Foundation
 
 on:
   workflow_call:
@@ -242,7 +242,7 @@ jobs:
               cut = text[: limit - 1].rstrip()
               if " " in cut:
                   cut = cut.rsplit(" ", 1)[0]
-              return cut + "…"
+              return cut + "вЂ¦"
 
           def extract_readme_summary(repo_root: Path) -> str:
               for candidate in ("README.md", "README.rst", "README.txt", "readme.md"):
@@ -500,30 +500,27 @@ jobs:
           ) -> str:
               lines = [
                   "## RepoBrain Ask",
-                  f"**Question** `{query}`",
-                  f"**Answer** {truncate(summary, 300)}",
+                  f"Question: {query}",
+                  f"Answer: {truncate(summary, 300)}",
               ]
               compact_signal = [(label, norm(value)) for label, value in (signal_lines or []) if norm(value)]
               if compact_signal:
-                  lines.append("Signal")
-                  for label, value in compact_signal:
-                      lines.append(f"- **{label}:** {truncate(value, 80)}")
+                  lines.append(f"Signal: {format_signal_inline(compact_signal)}")
               compact_details = [(label, norm(value)) for label, value in (details or []) if norm(value)]
               if compact_details:
-                  lines.append("")
                   for label, value in compact_details:
-                      lines.append(f"- **{label}:** {truncate(value, 260)}")
+                      lines.append(f"{label}: {truncate(value, 260)}")
               if norm(note):
-                  lines.append(f"- **Note:** {truncate(note, 240)}")
+                  lines.append(f"Note: {truncate(note, 240)}")
               if norm(next_question):
-                  lines.append(f"- **Try next:** {truncate(next_question, 240)}")
+                  lines.append(f"Next safe step: {truncate(next_question, 240)}")
               return "\n".join(lines)
 
           def format_signal_inline(signal_lines: list[tuple[str, str]] | None = None) -> str:
               compact_signal = [(label, norm(value)) for label, value in (signal_lines or []) if norm(value)]
               if not compact_signal:
                   return ""
-              return " | ".join(f"{label}={truncate(value, 40)}" for label, value in compact_signal)
+              return " · ".join(f"{label}={truncate(value, 40)}" for label, value in compact_signal)
 
           def build_signal_lines(
               basis: str,
@@ -563,20 +560,20 @@ jobs:
               summary_text = pr_summary or "Visible PR context is limited, so this Review-Lite card is based on sparse PR metadata only."
               lines = [
                   "## RepoBrain Review-Lite",
-                  f"**PR Summary** {truncate(summary_text, 300)}",
+                  f"PR Summary: {truncate(summary_text, 300)}",
               ]
               signal_text = format_signal_inline(signal_lines)
               if signal_text:
-                  lines.append(f"**Signal** {signal_text}")
+                  lines.append(f"Signal: {signal_text}")
               if norm(files_text):
-                  lines.append(f"**Changed files** {truncate(files_text, 260)}")
-              lines.append("**Watch points**")
+                  lines.append(f"Changed files: {truncate(files_text, 260)}")
+              lines.append("Watch points:")
               lines.append("- read-only triage based on visible PR context")
               lines.append("- no deep code review, fix generation, or security claims performed")
               if norm(note):
                   lines.append(f"- note: {truncate(note, 220)}")
               if norm(next_question):
-                  lines.append(f"**Next safe step** Try: {truncate(next_question, 220)}")
+                  lines.append(f"Next safe step: {truncate(next_question, 220)}")
               return "\n".join(lines)
 
           def answer_repo_aware(query: str, repository: str, repo_root: Path, pr_context: dict) -> str:
@@ -1165,5 +1162,7 @@ jobs:
             artifacts/onboarding/repobrain_install_readiness.json
             artifacts/onboarding/repobrain_install_readiness.md
           if-no-files-found: ignore
+
+
 
 
