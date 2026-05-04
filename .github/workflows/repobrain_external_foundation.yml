@@ -119,6 +119,62 @@ jobs:
         with:
           ref: ${{ steps.checkout_ref.outputs.ref }}
 
+      - name: Collect bounded PR context
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueRaw = String(process.env.ISSUE_NUMBER || "").trim();
+            const issueNumber = Number(issueRaw.replace(/^#/, ""));
+            const payload = {
+              issue_number: issueNumber || null,
+              is_pull_request: false,
+              pull_request: null,
+            };
+            if (issueNumber) {
+              try {
+                const { data: pull } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: issueNumber,
+                });
+                const { data: files } = await github.rest.pulls.listFiles({
+                  owner,
+                  repo,
+                  pull_number: issueNumber,
+                  per_page: 20,
+                });
+                payload.is_pull_request = true;
+                payload.pull_request = {
+                  number: pull.number,
+                  title: String(pull.title || "").trim(),
+                  body: String(pull.body || "").trim(),
+                  state: String(pull.state || "").trim(),
+                  changed_files: Number(pull.changed_files || files.length || 0),
+                  files: files.map((file) => ({
+                    filename: String(file.filename || "").trim(),
+                    status: String(file.status || "").trim(),
+                    additions: Number(file.additions || 0),
+                    deletions: Number(file.deletions || 0),
+                  })),
+                };
+              } catch (error) {
+                core.info(`PR context collection skipped: ${error}`);
+              }
+            }
+            fs.mkdirSync(path.join(process.cwd(), 'artifacts'), { recursive: true });
+            fs.writeFileSync(
+              path.join(process.cwd(), 'artifacts', 'pr_context.json'),
+              JSON.stringify(payload, null, 2),
+              'utf8'
+            );
+
       - name: Setup Python for self-contained foundation
         uses: actions/setup-python@v5
         with:
@@ -164,6 +220,205 @@ jobs:
 
           def split_csv(v):
               return [x.strip() for x in str(v or "").split(",") if x.strip()]
+
+          def read_text(path: Path, limit: int = 12000) -> str:
+              try:
+                  return path.read_text(encoding="utf-8")[:limit]
+              except UnicodeDecodeError:
+                  try:
+                      return path.read_text(encoding="utf-8-sig")[:limit]
+                  except Exception:
+                      return ""
+              except Exception:
+                  return ""
+
+          def collapse_ws(text: str) -> str:
+              return re.sub(r"\s+", " ", norm(text))
+
+          def truncate(text: str, limit: int = 220) -> str:
+              text = collapse_ws(text)
+              if len(text) <= limit:
+                  return text
+              cut = text[: limit - 1].rstrip()
+              if " " in cut:
+                  cut = cut.rsplit(" ", 1)[0]
+              return cut + "…"
+
+          def extract_readme_summary(repo_root: Path) -> str:
+              for candidate in ("README.md", "README.rst", "README.txt", "readme.md"):
+                  path = repo_root / candidate
+                  if not path.exists():
+                      continue
+                  text = read_text(path)
+                  if not text:
+                      continue
+                  lines = [line.strip() for line in text.splitlines()]
+                  cleaned = []
+                  for line in lines:
+                      if not line:
+                          continue
+                      if line.startswith("#"):
+                          continue
+                      if re.match(r"^[=\-]{3,}$", line):
+                          continue
+                      if line.startswith(("![", "[!")):
+                          continue
+                      cleaned.append(line)
+                      if len(cleaned) >= 4:
+                          break
+                  if cleaned:
+                      return truncate(" ".join(cleaned), 260)
+              return ""
+
+          def extract_manifest_summary(repo_root: Path) -> str:
+              package_json = repo_root / "package.json"
+              if package_json.exists():
+                  try:
+                      payload = json.loads(read_text(package_json, 24000) or "{}")
+                      bits = []
+                      if payload.get("name"):
+                          bits.append(f"package `{payload['name']}`")
+                      if payload.get("description"):
+                          bits.append(truncate(str(payload["description"]), 180))
+                      scripts = payload.get("scripts") or {}
+                      if isinstance(scripts, dict) and scripts:
+                          script_names = ", ".join(list(scripts.keys())[:4])
+                          bits.append(f"scripts: {script_names}")
+                      if bits:
+                          return "; ".join(bits)
+                  except Exception:
+                      pass
+
+              pyproject = repo_root / "pyproject.toml"
+              if pyproject.exists():
+                  text = read_text(pyproject)
+                  name = ""
+                  desc = ""
+                  for line in text.splitlines():
+                      stripped = line.strip()
+                      if not name and stripped.startswith("name ="):
+                          name = stripped.split("=", 1)[1].strip().strip("\"'")
+                      if not desc and stripped.startswith("description ="):
+                          desc = stripped.split("=", 1)[1].strip().strip("\"'")
+                      if name and desc:
+                          break
+                  bits = []
+                  if name:
+                      bits.append(f"package `{name}`")
+                  if desc:
+                      bits.append(truncate(desc, 180))
+                  if bits:
+                      return "; ".join(bits)
+
+              go_mod = repo_root / "go.mod"
+              if go_mod.exists():
+                  text = read_text(go_mod)
+                  first = next((line.strip() for line in text.splitlines() if line.strip().startswith("module ")), "")
+                  if first:
+                      return f"Go module `{first.split(None, 1)[1]}`"
+              return ""
+
+          def summarize_components(repo_root: Path) -> list[str]:
+              interesting_dirs = []
+              interesting_files = []
+              ignore_dirs = {
+                  ".git", ".github", ".venv", "node_modules", "__pycache__", "dist",
+                  "build", "coverage", ".pytest_cache", ".ruff_cache"
+              }
+              for child in sorted(repo_root.iterdir(), key=lambda p: p.name.lower()):
+                  name = child.name
+                  if child.is_dir():
+                      if name in ignore_dirs or name.startswith("."):
+                          continue
+                      interesting_dirs.append(name)
+                  elif child.is_file():
+                      if name.lower().startswith("readme"):
+                          continue
+                      if name in {"package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Dockerfile", "Makefile"}:
+                          interesting_files.append(name)
+              items = interesting_dirs[:5] + interesting_files[:3]
+              return items[:6]
+
+          def load_pr_context() -> dict:
+              path = Path("artifacts/pr_context.json")
+              if not path.exists():
+                  return {}
+              try:
+                  return json.loads(path.read_text(encoding="utf-8"))
+              except Exception:
+                  return {}
+
+          def summarize_pr(pr_context: dict) -> tuple[str, list[str]]:
+              pull = pr_context.get("pull_request") or {}
+              title = collapse_ws(pull.get("title", ""))
+              body = truncate(pull.get("body", ""), 220)
+              file_entries = pull.get("files") or []
+              files = [norm(entry.get("filename")) for entry in file_entries if norm(entry.get("filename"))]
+              summary_bits = []
+              if title:
+                  summary_bits.append(title)
+              if body:
+                  summary_bits.append(body)
+              if pull.get("changed_files"):
+                  summary_bits.append(f"changed files: {pull.get('changed_files')}")
+              return " ".join(summary_bits).strip(), files[:6]
+
+          def answer_repo_aware(query: str, repository: str, repo_root: Path, pr_context: dict) -> str:
+              lowered = query.lower()
+              readme_summary = extract_readme_summary(repo_root)
+              manifest_summary = extract_manifest_summary(repo_root)
+              component_names = summarize_components(repo_root)
+              pr_summary, pr_files = summarize_pr(pr_context)
+              repo_name = repository.split("/")[-1] if repository else repo_root.name
+
+              purpose_text = readme_summary or manifest_summary or f"`{repo_name}` is a repository with bounded external foundation access."
+              manifest_text = manifest_summary or "No package/manifest summary was detected in the bounded scan."
+              components_text = ", ".join(f"`{name}`" for name in component_names) if component_names else "No obvious top-level components were detected in the bounded scan."
+              files_text = ", ".join(f"`{name}`" for name in pr_files) if pr_files else "No PR file list was available."
+
+              if "pr" in lowered and any(token in lowered for token in ("about", "change", "changed", "what is this")):
+                  pr_line = pr_summary or "PR metadata was not available in the bounded external path."
+                  return (
+                      "## RepoBrain Ask (External GitHub Foundation)\n"
+                      f"Question: `{query}`\n\n"
+                      f"PR summary: {truncate(pr_line, 260)}\n"
+                      f"Changed files: {files_text}"
+                  )
+
+              if any(token in lowered for token in ("what changed", "changed here", "files changed", "change here")):
+                  change_line = pr_summary or purpose_text
+                  return (
+                      "## RepoBrain Ask (External GitHub Foundation)\n"
+                      f"Question: `{query}`\n\n"
+                      f"Change summary: {truncate(change_line, 260)}\n"
+                      f"Changed files: {files_text}"
+                  )
+
+              if any(token in lowered for token in ("main components", "components", "main modules", "structure")):
+                  return (
+                      "## RepoBrain Ask (External GitHub Foundation)\n"
+                      f"Question: `{query}`\n\n"
+                      f"Main visible components: {components_text}\n"
+                      f"Repository summary: {truncate(purpose_text, 220)}"
+                  )
+
+              if any(token in lowered for token in ("what does this repository do", "purpose of this repository", "what is this repository", "what does this repo do", "repository do")):
+                  return (
+                      "## RepoBrain Ask (External GitHub Foundation)\n"
+                      f"Question: `{query}`\n\n"
+                      f"Repository purpose: {truncate(purpose_text, 280)}\n"
+                      f"Manifest signal: {truncate(manifest_text, 220)}\n"
+                      f"Main visible components: {components_text}"
+                  )
+
+              fallback_bits = [purpose_text]
+              if pr_summary:
+                  fallback_bits.append(f"Relevant PR context: {truncate(pr_summary, 180)}")
+              return (
+                  "## RepoBrain Ask (External GitHub Foundation)\n"
+                  f"Question: `{query}`\n\n"
+                  + "\n".join(f"- {truncate(bit, 260)}" for bit in fallback_bits if bit)
+              )
 
           def reason_for_status(overall_status: str, fail_codes: set[str]):
               if overall_status == "READY":
@@ -239,12 +494,6 @@ jobs:
           else:
               status = "success"
               decision = "ANSWER"
-              body = (
-                  "## RepoBrain Ask (External GitHub Foundation)\n"
-                  f"Question: `{query}`\n\n"
-                  "Bounded answer: this public foundation confirms command handling and governance-aware boundaries.\n"
-                  "For deep repository reasoning workflows, use the primary GitHub mode surface."
-              )
 
           now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
           repository = norm(os.getenv("GITHUB_REPOSITORY"))
@@ -256,6 +505,11 @@ jobs:
           workflow_ref = norm(os.getenv("GITHUB_WORKFLOW_REF"))
           workflow_sha = norm(os.getenv("GITHUB_WORKFLOW_SHA"))
           workflow_path = norm(os.getenv("WORKFLOW_PATH")) or ".github/workflows/repobrain_external.yml"
+          repo_root = Path.cwd()
+          pr_context = load_pr_context()
+
+          if supported and cmd == "ask" and query:
+              body = answer_repo_aware(query, repository, repo_root, pr_context)
 
           Path("artifacts/audit").mkdir(parents=True, exist_ok=True)
           Path("artifacts/evidence_pack").mkdir(parents=True, exist_ok=True)
@@ -269,9 +523,15 @@ jobs:
               "command": cmd,
               "supported": bool(supported),
               "query": query,
+              "answer_mode": "repo_aware_compact_v1" if (supported and cmd == "ask" and query) else "bounded_foundation_v1",
               "bounded_scope": {
                   "supported_commands": ["help", "ask"],
                   "unsupported_commands": ["review", "fix"],
+              },
+              "context_summary": {
+                  "pr_context_available": bool(pr_context.get("is_pull_request")),
+                  "readme_present": any((repo_root / candidate).exists() for candidate in ("README.md", "README.rst", "README.txt", "readme.md")),
+                  "manifest_present": any((repo_root / candidate).exists() for candidate in ("package.json", "pyproject.toml", "go.mod")),
               },
               "runtime_provenance": {
                   "repository": repository,
