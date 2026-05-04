@@ -63,7 +63,7 @@ jobs:
             cmd="help"
           fi
           cmd="$(echo "$cmd" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$cmd" == "help" || "$cmd" == "ask" ]]; then
+          if [[ "$cmd" == "help" || "$cmd" == "ask" || "$cmd" == "review" ]]; then
             supported="1"
           else
             supported="0"
@@ -519,6 +519,66 @@ jobs:
                   lines.append(f"- **Try next:** {truncate(next_question, 240)}")
               return "\n".join(lines)
 
+          def format_signal_inline(signal_lines: list[tuple[str, str]] | None = None) -> str:
+              compact_signal = [(label, norm(value)) for label, value in (signal_lines or []) if norm(value)]
+              if not compact_signal:
+                  return ""
+              return " | ".join(f"{label}={truncate(value, 40)}" for label, value in compact_signal)
+
+          def build_signal_lines(
+              basis: str,
+              readme_summary: str,
+              manifest_summary: str,
+              pr_summary: str,
+              pr_files: list[str],
+              component_names: list[str],
+              pr_context: dict,
+          ) -> list[tuple[str, str]]:
+              if basis == "repository":
+                  return [
+                      ("basis", "repository"),
+                      ("type", infer_repository_type(manifest_summary, component_names)),
+                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="repository")),
+                  ]
+              if basis == "pr":
+                  return [
+                      ("basis", "PR"),
+                      ("scope", infer_signal_scope(pr_context, component_names)),
+                      ("type", infer_signal_type(pr_files, manifest_summary, component_names)),
+                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="pr")),
+                  ]
+              return [
+                  ("basis", "mixed"),
+                  ("type", infer_signal_type(pr_files, manifest_summary, component_names) if pr_files else infer_repository_type(manifest_summary, component_names)),
+                  ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="mixed")),
+              ]
+
+          def render_review_lite(
+              pr_summary: str,
+              signal_lines: list[tuple[str, str]],
+              files_text: str,
+              note: str = "",
+              next_question: str = "",
+          ) -> str:
+              summary_text = pr_summary or "Visible PR context is limited, so this Review-Lite card is based on sparse PR metadata only."
+              lines = [
+                  "## RepoBrain Review-Lite",
+                  f"**PR Summary** {truncate(summary_text, 300)}",
+              ]
+              signal_text = format_signal_inline(signal_lines)
+              if signal_text:
+                  lines.append(f"**Signal** {signal_text}")
+              if norm(files_text):
+                  lines.append(f"**Changed files** {truncate(files_text, 260)}")
+              lines.append("**Watch points**")
+              lines.append("- read-only triage based on visible PR context")
+              lines.append("- no deep code review, fix generation, or security claims performed")
+              if norm(note):
+                  lines.append(f"- note: {truncate(note, 220)}")
+              if norm(next_question):
+                  lines.append(f"**Next safe step** Try: {truncate(next_question, 220)}")
+              return "\n".join(lines)
+
           def answer_repo_aware(query: str, repository: str, repo_root: Path, pr_context: dict) -> str:
               lowered = query.lower()
               readme_summary = extract_readme_summary(repo_root)
@@ -542,25 +602,15 @@ jobs:
               pr_context_available = bool(pr_context.get("is_pull_request"))
               next_questions = suggest_next_questions(pr_context_available, bool(component_names))
               basis = classify_signal_basis(lowered)
-              if basis == "repository":
-                  signal_lines = [
-                      ("basis", "repository"),
-                      ("type", infer_repository_type(manifest_summary, component_names)),
-                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="repository")),
-                  ]
-              elif basis == "pr":
-                  signal_lines = [
-                      ("basis", "PR"),
-                      ("scope", infer_signal_scope(pr_context, component_names)),
-                      ("type", infer_signal_type(pr_files, manifest_summary, component_names)),
-                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="pr")),
-                  ]
-              else:
-                  signal_lines = [
-                      ("basis", "mixed"),
-                      ("type", infer_signal_type(pr_files, manifest_summary, component_names) if pr_files else infer_repository_type(manifest_summary, component_names)),
-                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="mixed")),
-                  ]
+              signal_lines = build_signal_lines(
+                  basis,
+                  readme_summary,
+                  manifest_summary,
+                  pr_summary,
+                  pr_files,
+                  component_names,
+                  pr_context,
+              )
               weak_context_note = ""
               if weak_context:
                   weak_context_note = "Repository context is limited here, so this answer relies on top-level files and any visible PR metadata."
@@ -674,7 +724,7 @@ jobs:
               status = "blocked"
               decision = "UNSUPPORTED_COMMAND"
               body = (
-                  "RepoBrain external GitHub mode foundation currently supports only `/repobrain help` and `/repobrain ask`.\n"
+                  "RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain ask`, and bounded `/repobrain review`.\n"
                   f"Received: `/repobrain {cmd}`.\n"
                   "This bounded behavior is intentional for the current external GitHub foundation stage."
               )
@@ -685,20 +735,25 @@ jobs:
                   "## RepoBrain External GitHub Foundation\n"
                   "Supported now:\n"
                   "- `/repobrain help`\n"
-                  "- `/repobrain ask <question>`\n\n"
+                  "- `/repobrain ask <question>`\n"
+                  "- `/repobrain review` - bounded Review-Lite PR triage\n\n"
                   "Best first questions:\n"
                   "- `/repobrain ask what does this repository do?`\n"
                   "- `/repobrain ask what is this PR about?`\n"
                   "- `/repobrain ask what changed here?`\n\n"
                   "Signal layer:\n"
-                  "- ask responses include short bounded signals for scope, type, and context strength\n\n"
+                  "- ask and Review-Lite responses include short bounded signals for scope, type, and context strength\n\n"
                   "Unsupported (explicitly blocked):\n"
-                  "- `/repobrain review`\n"
                   "- `/repobrain fix`\n\n"
                   "Bounded behavior note:\n"
                   "- answers use visible repo and PR context only\n"
+                  "- Review-Lite is read-only and based on visible PR context only\n"
+                  "- Review-Lite does not generate fixes or claim full review parity\n"
                   "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
               )
+          elif cmd == "review":
+              status = "success"
+              decision = "REVIEW_LITE"
           elif not query:
               status = "blocked"
               decision = "ASK_QUERY_MISSING"
@@ -726,6 +781,31 @@ jobs:
 
           if supported and cmd == "ask" and query:
               body = answer_repo_aware(query, repository, repo_root, pr_context)
+          elif supported and cmd == "review":
+              readme_summary = extract_readme_summary(repo_root)
+              manifest_summary = extract_manifest_summary(repo_root)
+              component_names = summarize_components(repo_root)
+              pr_summary, pr_files = summarize_pr(pr_context)
+              files_text = format_changed_files(pr_files)
+              signal_lines = build_signal_lines(
+                  "pr",
+                  readme_summary,
+                  manifest_summary,
+                  pr_summary,
+                  pr_files,
+                  component_names,
+                  pr_context,
+              )
+              review_note = ""
+              if not pr_summary:
+                  review_note = "Visible PR title/body context is thin in this bounded external path."
+              body = render_review_lite(
+                  pr_summary,
+                  signal_lines,
+                  files_text,
+                  note=review_note,
+                  next_question="`/repobrain ask what changed here?`",
+              )
 
           Path("artifacts/audit").mkdir(parents=True, exist_ok=True)
           Path("artifacts/evidence_pack").mkdir(parents=True, exist_ok=True)
@@ -739,10 +819,14 @@ jobs:
               "command": cmd,
               "supported": bool(supported),
               "query": query,
-              "answer_mode": "repo_aware_compact_v1" if (supported and cmd == "ask" and query) else "bounded_foundation_v1",
+              "answer_mode": (
+                  "repo_aware_compact_v1" if (supported and cmd == "ask" and query)
+                  else "review_lite_pr_triage_v1" if (supported and cmd == "review")
+                  else "bounded_foundation_v1"
+              ),
               "bounded_scope": {
-                  "supported_commands": ["help", "ask"],
-                  "unsupported_commands": ["review", "fix"],
+                  "supported_commands": ["help", "ask", "review"],
+                  "unsupported_commands": ["fix"],
               },
               "context_summary": {
                   "pr_context_available": bool(pr_context.get("is_pull_request")),
@@ -804,8 +888,8 @@ jobs:
               f"- Status: `{status}`\n"
               f"- Decision: `{decision}`\n"
               f"- Command: `{cmd}`\n"
-              "- Supported scope: `help`, `ask`\n"
-              "- Unsupported scope: `review`, `fix`\n"
+              "- Supported scope: `help`, `ask`, `review`\n"
+              "- Unsupported scope: `fix`\n"
           )
           Path("artifacts/evidence_pack/repobrain_tkya_evidence_pack.md").write_text(evidence_md, encoding="utf-8")
 
@@ -1081,3 +1165,5 @@ jobs:
             artifacts/onboarding/repobrain_install_readiness.json
             artifacts/onboarding/repobrain_install_readiness.md
           if-no-files-found: ignore
+
+
