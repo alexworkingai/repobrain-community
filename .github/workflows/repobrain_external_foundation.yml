@@ -387,6 +387,17 @@ jobs:
                       deduped.append(item)
               return ", ".join(deduped[:3])
 
+          def classify_signal_basis(lowered: str) -> str:
+              if "pr" in lowered and any(token in lowered for token in ("about", "change", "changed", "what is this")):
+                  return "pr"
+              if any(token in lowered for token in ("what changed", "changed here", "files changed", "change here")):
+                  return "pr"
+              if any(token in lowered for token in ("what does this repository do", "purpose of this repository", "what is this repository", "what does this repo do", "repository do", "main components", "components", "main modules", "structure")):
+                  return "repository"
+              if any(token in lowered for token in ("repository", "repo")) and any(token in lowered for token in ("pr", "change", "changed")):
+                  return "mixed"
+              return "mixed"
+
           def infer_signal_scope(pr_context: dict, component_names: list[str]) -> str:
               pull = pr_context.get("pull_request") or {}
               changed_files = int(pull.get("changed_files") or 0)
@@ -441,21 +452,35 @@ jobs:
                   return "feature"
               return "mixed"
 
+          def infer_repository_type(manifest_summary: str, component_names: list[str]) -> str:
+              manifest = manifest_summary.lower()
+              names = [name.lower() for name in component_names]
+              if manifest:
+                  return "app"
+              if any(name in {"infra", "deploy", "ops"} for name in names):
+                  return "infra"
+              if any(name in {"config", "configs", "settings"} for name in names):
+                  return "config"
+              if names:
+                  return "app"
+              return "mixed"
+
           def infer_signal_context_strength(
               readme_summary: str,
               manifest_summary: str,
               pr_summary: str,
               pr_files: list[str],
               component_names: list[str],
+              basis: str = "mixed",
           ) -> str:
               score = 0
               if readme_summary:
                   score += 2
               if manifest_summary:
                   score += 1
-              if pr_summary:
+              if pr_summary and basis in {"pr", "mixed"}:
                   score += 2
-              if pr_files:
+              if pr_files and basis in {"pr", "mixed"}:
                   score += 1
               if component_names:
                   score += 1
@@ -480,8 +505,7 @@ jobs:
               ]
               compact_signal = [(label, norm(value)) for label, value in (signal_lines or []) if norm(value)]
               if compact_signal:
-                  lines.append("")
-                  lines.append("**Signal**")
+                  lines.append("Signal")
                   for label, value in compact_signal:
                       lines.append(f"- **{label}:** {truncate(value, 80)}")
               compact_details = [(label, norm(value)) for label, value in (details or []) if norm(value)]
@@ -517,11 +541,26 @@ jobs:
               weak_context = not readme_summary and not manifest_summary
               pr_context_available = bool(pr_context.get("is_pull_request"))
               next_questions = suggest_next_questions(pr_context_available, bool(component_names))
-              signal_lines = [
-                  ("scope", infer_signal_scope(pr_context, component_names)),
-                  ("type", infer_signal_type(pr_files, manifest_summary, component_names)),
-                  ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names)),
-              ]
+              basis = classify_signal_basis(lowered)
+              if basis == "repository":
+                  signal_lines = [
+                      ("basis", "repository"),
+                      ("type", infer_repository_type(manifest_summary, component_names)),
+                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="repository")),
+                  ]
+              elif basis == "pr":
+                  signal_lines = [
+                      ("basis", "PR"),
+                      ("scope", infer_signal_scope(pr_context, component_names)),
+                      ("type", infer_signal_type(pr_files, manifest_summary, component_names)),
+                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="pr")),
+                  ]
+              else:
+                  signal_lines = [
+                      ("basis", "mixed"),
+                      ("type", infer_signal_type(pr_files, manifest_summary, component_names) if pr_files else infer_repository_type(manifest_summary, component_names)),
+                      ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="mixed")),
+                  ]
               weak_context_note = ""
               if weak_context:
                   weak_context_note = "Repository context is limited here, so this answer relies on top-level files and any visible PR metadata."
