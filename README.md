@@ -1,55 +1,102 @@
 # repobrain-community
 
-Public install and community-facing surface for RepoBrain.
+Public install kit for RepoBrain Community.
 
-This repository is intended for:
-- reusable GitHub workflows,
-- community install templates,
-- public-safe setup docs,
-- bounded capability guidance.
+Use this repository when you want a first external GitHub-native RepoBrain setup that is:
 
-It does not expose protected internal kernel details.
+- copyable,
+- bounded,
+- public-safe,
+- easy to trial on a small PR.
 
-## External GitHub Foundation (Current)
+## What This Supports
 
-Reusable workflow host:
+Supported:
 
-- `.github/workflows/repobrain_external_foundation.yml`
-- self-contained public host workflow (no runtime dependency on RepoBrain-Action)
+- `/repobrain help`
+- `/repobrain ask ...`
+- `/repobrain review` as bounded Review-Lite PR triage
 
-Current bounded contract:
+Unsupported:
 
-- supported: `/repobrain help`, `/repobrain ask ...`, `/repobrain review` (bounded Review-Lite PR triage)
-- unsupported (explicit block): `/repobrain fix`, out-of-contract commands
+- `/repobrain fix`
+- out-of-contract commands
 
-Third-party caller workflow shape:
+## Quick Install
 
-```yaml
-jobs:
-  repobrain_external:
-    uses: alexworkingai/repobrain-community/.github/workflows/repobrain_external_foundation.yml@main
-    with:
-      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
-      comment_text: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_text || github.event.comment.body }}
-      issue_number: ${{ github.event_name == 'workflow_dispatch' && inputs.issue_number || github.event.issue.number }}
-      workflow_path: .github/workflows/repobrain_external.yml
-      caller_event_name: ${{ github.event_name }}
-    secrets: inherit
+1. Copy `templates/repobrain.yml` into your own repository as `.github/workflows/repobrain.yml`.
+2. Commit the workflow file.
+3. Open a small PR in your repository.
+4. Run `/repobrain help`.
+5. Run `/repobrain ask what is this PR about?`
+6. Run `/repobrain review`.
+7. Confirm `/repobrain fix` is blocked explicitly.
+
+The reusable workflow host is:
+
+- `alexworkingai/repobrain-community/.github/workflows/repobrain_external_foundation.yml@main`
+
+## Copyable Workflow Template
+
+- template file: `templates/repobrain.yml`
+
+This template:
+
+- supports `issue_comment` command entry,
+- supports `workflow_dispatch` for manual testing,
+- calls the canonical public host in this repository,
+- does not rely on private/internal runtime wiring.
+
+## Expected Output Examples
+
+`/repobrain ask what is this PR about?`
+
+```text
+## RepoBrain Ask
+Question: what is this PR about?
+Answer: Add TRIAL_PR_MARKER.md for validation PR marker.
+Signal: basis=PR · scope=small · type=docs · context=strong
+Changed files: TRIAL_PR_MARKER.md
 ```
 
-## Community Trial Path
+`/repobrain review`
 
-Use this short path for first external trial users:
+```text
+## RepoBrain Review-Lite
+PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
+Signal: basis=PR · scope=small · type=docs · context=strong
+Changed files: TRIAL_PR_MARKER.md
+Watch points:
+- read-only triage based on visible PR context
+- no deep code review, fix generation, or security claims performed
+Next safe step: /repobrain ask what changed here?
+```
 
-1. Install or call the reusable workflow from `alexworkingai/repobrain-community/.github/workflows/repobrain_external_foundation.yml@main`.
-2. Open a small PR in the target repository.
-3. Run `/repobrain help`.
-4. Run `/repobrain ask what is this PR about?`
-5. Run `/repobrain review`.
-6. Confirm `/repobrain fix` is blocked explicitly.
+`/repobrain fix`
 
-Bounded trial notes:
+```text
+RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain ask`, and bounded `/repobrain review`.
+Received: `/repobrain fix`.
+This bounded behavior is intentional for the current external GitHub foundation stage.
+```
+
+## Community Trial Checklist
+
+- copy `templates/repobrain.yml` into `.github/workflows/repobrain.yml`
+- open a small PR
+- run `/repobrain help`
+- run `/repobrain ask what is this PR about?`
+- run `/repobrain review`
+- confirm `/repobrain fix` is blocked
+- verify one response per command
+- verify no full review/fix/security claims are made
+
+## Bounded Notes / Non-Claims
 
 - Review-Lite is read-only PR triage.
 - Ask and Review-Lite use visible repo/PR context only.
-- No full review, fix generation, or security claims are made.
+- No full external review parity is claimed.
+- No bug finding claims are made.
+- No vulnerability/security claims are made.
+- No fix suggestions or patch generation are performed.
+- No autonomous agent behavior is claimed.
