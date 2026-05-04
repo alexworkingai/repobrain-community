@@ -363,6 +363,19 @@ jobs:
                   summary_bits.append(f"changed files: {pull.get('changed_files')}")
               return " ".join(summary_bits).strip(), files[:6]
 
+          def render_compact_answer(query: str, summary: str, details: list[tuple[str, str]] | None = None) -> str:
+              lines = [
+                  "## RepoBrain Ask",
+                  f"**Question** `{query}`",
+                  f"**Answer** {truncate(summary, 300)}",
+              ]
+              compact_details = [(label, norm(value)) for label, value in (details or []) if norm(value)]
+              if compact_details:
+                  lines.append("")
+                  for label, value in compact_details:
+                      lines.append(f"- **{label}:** {truncate(value, 260)}")
+              return "\n".join(lines)
+
           def answer_repo_aware(query: str, repository: str, repo_root: Path, pr_context: dict) -> str:
               lowered = query.lower()
               readme_summary = extract_readme_summary(repo_root)
@@ -378,46 +391,49 @@ jobs:
 
               if "pr" in lowered and any(token in lowered for token in ("about", "change", "changed", "what is this")):
                   pr_line = pr_summary or "PR metadata was not available in the bounded external path."
-                  return (
-                      "## RepoBrain Ask (External GitHub Foundation)\n"
-                      f"Question: `{query}`\n\n"
-                      f"PR summary: {truncate(pr_line, 260)}\n"
-                      f"Changed files: {files_text}"
+                  return render_compact_answer(
+                      query,
+                      pr_line,
+                      [
+                          ("Changed files", files_text),
+                      ],
                   )
 
               if any(token in lowered for token in ("what changed", "changed here", "files changed", "change here")):
                   change_line = pr_summary or purpose_text
-                  return (
-                      "## RepoBrain Ask (External GitHub Foundation)\n"
-                      f"Question: `{query}`\n\n"
-                      f"Change summary: {truncate(change_line, 260)}\n"
-                      f"Changed files: {files_text}"
+                  return render_compact_answer(
+                      query,
+                      change_line,
+                      [
+                          ("Changed files", files_text),
+                      ],
                   )
 
               if any(token in lowered for token in ("main components", "components", "main modules", "structure")):
-                  return (
-                      "## RepoBrain Ask (External GitHub Foundation)\n"
-                      f"Question: `{query}`\n\n"
-                      f"Main visible components: {components_text}\n"
-                      f"Repository summary: {truncate(purpose_text, 220)}"
+                  return render_compact_answer(
+                      query,
+                      f"Main visible components center on {components_text}.",
+                      [
+                          ("Repository summary", truncate(purpose_text, 220)),
+                      ],
                   )
 
               if any(token in lowered for token in ("what does this repository do", "purpose of this repository", "what is this repository", "what does this repo do", "repository do")):
-                  return (
-                      "## RepoBrain Ask (External GitHub Foundation)\n"
-                      f"Question: `{query}`\n\n"
-                      f"Repository purpose: {truncate(purpose_text, 280)}\n"
-                      f"Manifest signal: {truncate(manifest_text, 220)}\n"
-                      f"Main visible components: {components_text}"
+                  return render_compact_answer(
+                      query,
+                      purpose_text,
+                      [
+                          ("Manifest signal", truncate(manifest_text, 220)),
+                          ("Main visible components", components_text),
+                      ],
                   )
 
-              fallback_bits = [purpose_text]
-              if pr_summary:
-                  fallback_bits.append(f"Relevant PR context: {truncate(pr_summary, 180)}")
-              return (
-                  "## RepoBrain Ask (External GitHub Foundation)\n"
-                  f"Question: `{query}`\n\n"
-                  + "\n".join(f"- {truncate(bit, 260)}" for bit in fallback_bits if bit)
+              return render_compact_answer(
+                  query,
+                  purpose_text,
+                  [
+                      ("Relevant context", truncate(pr_summary, 180) if pr_summary else ""),
+                  ],
               )
 
           def reason_for_status(overall_status: str, fail_codes: set[str]):
