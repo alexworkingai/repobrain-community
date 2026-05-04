@@ -361,17 +361,67 @@ jobs:
                   summary_bits.append(body)
               if pull.get("changed_files"):
                   summary_bits.append(f"changed files: {pull.get('changed_files')}")
-              return " ".join(summary_bits).strip(), files[:6]
+              return " ".join(summary_bits).strip(), files
 
-          def format_changed_files(pr_files: list[str]) -> str:
+          def extract_changed_file_count(pr_context: dict, pr_files: list[str]) -> int:
+              pull = pr_context.get("pull_request") or {}
+              count = int(pull.get("changed_files") or 0)
+              if count > 0:
+                  return count
+              return len(pr_files)
+
+          def format_changed_files(pr_files: list[str], total_count: int = 0) -> str:
               if not pr_files:
                   return ""
               visible = pr_files[:4]
               text = ", ".join(f"`{name}`" for name in visible)
-              extra = len(pr_files) - len(visible)
+              extra = max(total_count or len(pr_files), len(pr_files)) - len(visible)
               if extra > 0:
                   text += f" (+{extra} more)"
               return text
+
+          def infer_change_areas(pr_files: list[str]) -> list[str]:
+              areas = []
+              lowered = [norm(name).lower() for name in pr_files if norm(name)]
+              for name in lowered:
+                  suffix = Path(name).suffix.lower()
+                  parts = [part for part in name.split("/") if part]
+                  top = parts[0] if parts else ""
+                  joined = f"/{name}/"
+
+                  def add(area: str):
+                      if area not in areas:
+                          areas.append(area)
+
+                  if suffix in {".md", ".rst", ".txt"} or top == "docs" or "/docs/" in joined:
+                      add("docs")
+                  if top in {"src", "app", "lib"} or suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb"}:
+                      add("src")
+                  if "test" in parts or top in {"tests", "__tests__"} or ".spec." in name or ".test." in name:
+                      add("tests")
+                  if top == ".github" or "/.github/workflows/" in joined:
+                      add("CI")
+                  if (
+                      suffix in {".yml", ".yaml", ".json", ".toml", ".ini"} or
+                      "config" in parts or
+                      top in {"config", "configs", "settings"}
+                  ):
+                      add("config")
+                  if (
+                      top in {"infra", "deploy", "ops"} or
+                      any(token in name for token in ("docker", "compose", "terraform", "deploy"))
+                  ):
+                      add("infra")
+                  if Path(name).name in {"package.json", "pyproject.toml", "go.mod", "cargo.toml", "requirements.txt", "poetry.lock"}:
+                      add("manifest")
+                  if any(token in name for token in ("trial", "validation", "smoke")):
+                      add("validation")
+              return areas[:4]
+
+          def format_change_areas(change_areas: list[str]) -> str:
+              if not change_areas:
+                  return ""
+              return " / ".join(change_areas)
 
           def suggest_next_questions(pr_context_available: bool, has_components: bool) -> str:
               options = []
@@ -435,6 +485,14 @@ jobs:
                   1 for name in files
                   if any(token in name for token in ("docker", "compose", ".github/workflows", "deploy", "terraform", "infra"))
               )
+              test_hits = sum(
+                  1 for name in files
+                  if any(token in name for token in ("/tests/", "/test/", ".spec.", ".test.")) or name.startswith("tests/")
+              )
+              manifest_hits = sum(
+                  1 for name in files
+                  if Path(name).name in {"package.json", "pyproject.toml", "go.mod", "cargo.toml", "requirements.txt", "poetry.lock"}
+              )
               code_hits = sum(
                   1 for name in files
                   if name.endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb"))
@@ -442,6 +500,10 @@ jobs:
 
               if docs_like:
                   return "docs"
+              if test_hits and test_hits == len(files):
+                  return "tests"
+              if manifest_hits and manifest_hits == len(files):
+                  return "config"
               if config_like and not code_hits:
                   return "config"
               if infra_hits and not code_hits:
@@ -564,6 +626,7 @@ jobs:
               pr_summary: str,
               signal_lines: list[tuple[str, str]],
               files_text: str,
+              change_areas_text: str = "",
               note: str = "",
               next_question: str = "",
           ) -> str:
@@ -577,6 +640,8 @@ jobs:
                   lines.append(f"Signal: {signal_text}")
               if norm(files_text):
                   lines.append(f"Changed files: {truncate(files_text, 260)}")
+              if norm(change_areas_text):
+                  lines.append(f"Change areas: {truncate(change_areas_text, 180)}")
               lines.append("Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed")
               if norm(note):
                   lines.append(f"Note: {truncate(note, 220)}")
@@ -600,7 +665,7 @@ jobs:
                   "Unsupported: fix",
                   "Setup notes:",
                   "- one RepoBrain responder is expected",
-                  "- Review-Lite is read-only PR triage",
+                  "- Review-Lite is fast read-only PR triage",
                   "- answers use visible repo/PR context only",
                   "- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment",
                   "Next step: /repobrain ask what is this PR about?",
@@ -625,7 +690,7 @@ jobs:
 
               manifest_text = manifest_summary or ""
               components_text = ", ".join(f"`{name}`" for name in component_names) if component_names else ""
-              files_text = format_changed_files(pr_files)
+              files_text = format_changed_files(pr_files, extract_changed_file_count(pr_context, pr_files))
               weak_context = not readme_summary and not manifest_summary
               pr_context_available = bool(pr_context.get("is_pull_request"))
               next_questions = suggest_next_questions(pr_context_available, bool(component_names))
@@ -765,14 +830,14 @@ jobs:
                   "- `/repobrain help`\n"
                   "- `/repobrain doctor`\n"
                   "- `/repobrain ask <question>`\n"
-                  "- `/repobrain review` - bounded Review-Lite PR triage\n\n"
+                  "- `/repobrain review` - fast bounded Review-Lite PR triage\n\n"
                   "Use `/repobrain doctor` to verify the external setup surface.\n\n"
                   "Best first questions:\n"
                   "- `/repobrain ask what does this repository do?`\n"
                   "- `/repobrain ask what is this PR about?`\n"
                   "- `/repobrain ask what changed here?`\n\n"
                   "Signal layer:\n"
-                  "- ask and Review-Lite responses include short bounded signals for scope, type, and context strength\n\n"
+                  "- ask and Review-Lite responses include short bounded signals for scope, type, and context strength\n- Review-Lite keeps changed files and change areas near the top for fast PR triage\n\n"
                   "Unsupported (explicitly blocked):\n"
                   "- `/repobrain fix`\n\n"
                   "Bounded behavior note:\n"
@@ -811,33 +876,38 @@ jobs:
           workflow_path = norm(os.getenv("WORKFLOW_PATH")) or ".github/workflows/repobrain_external.yml"
           repo_root = Path.cwd()
           pr_context = load_pr_context()
+          readme_summary_for_review = extract_readme_summary(repo_root)
+          manifest_summary_for_review = extract_manifest_summary(repo_root)
+          component_names_for_review = summarize_components(repo_root)
+          pr_summary_for_audit, pr_files_for_audit = summarize_pr(pr_context)
+          review_changed_file_count = extract_changed_file_count(pr_context, pr_files_for_audit)
+          review_change_areas = infer_change_areas(pr_files_for_audit)
+          review_signal_lines = build_signal_lines(
+              "pr",
+              readme_summary_for_review,
+              manifest_summary_for_review,
+              pr_summary_for_audit,
+              pr_files_for_audit,
+              component_names_for_review,
+              pr_context,
+          ) if supported and cmd == "review" else []
+          review_signal_map = {label: value for label, value in review_signal_lines}
 
           if supported and cmd == "ask" and query:
               body = answer_repo_aware(query, repository, repo_root, pr_context)
           elif supported and cmd == "doctor":
               body = render_doctor_card(workflow_ref, workflow_path, event_name)
           elif supported and cmd == "review":
-              readme_summary = extract_readme_summary(repo_root)
-              manifest_summary = extract_manifest_summary(repo_root)
-              component_names = summarize_components(repo_root)
-              pr_summary, pr_files = summarize_pr(pr_context)
-              files_text = format_changed_files(pr_files)
-              signal_lines = build_signal_lines(
-                  "pr",
-                  readme_summary,
-                  manifest_summary,
-                  pr_summary,
-                  pr_files,
-                  component_names,
-                  pr_context,
-              )
+              files_text = format_changed_files(pr_files_for_audit, review_changed_file_count)
+              change_areas_text = format_change_areas(review_change_areas)
               review_note = ""
-              if not pr_summary:
+              if not pr_summary_for_audit:
                   review_note = "Visible PR title/body context is thin in this bounded external path."
               body = render_review_lite(
-                  pr_summary,
-                  signal_lines,
+                  pr_summary_for_audit,
+                  review_signal_lines,
                   files_text,
+                  change_areas_text=change_areas_text,
                   note=review_note,
                   next_question="`/repobrain ask what changed here?`",
               )
@@ -868,6 +938,17 @@ jobs:
                   "pr_context_available": bool(pr_context.get("is_pull_request")),
                   "readme_present": any((repo_root / candidate).exists() for candidate in ("README.md", "README.rst", "README.txt", "readme.md")),
                   "manifest_present": any((repo_root / candidate).exists() for candidate in ("package.json", "pyproject.toml", "go.mod")),
+              },
+              "triage_summary": {
+                  "output_mode": "fast_triage_review_lite_v1" if (supported and cmd == "review") else "n/a",
+                  "changed_file_count": review_changed_file_count if (supported and cmd == "review") else 0,
+                  "changed_files_sample": pr_files_for_audit[:4] if (supported and cmd == "review") else [],
+                  "change_areas": review_change_areas if (supported and cmd == "review") else [],
+                  "signal": review_signal_map if (supported and cmd == "review") else {},
+                  "event_name": event_name or "n/a",
+                  "workflow_path": workflow_path,
+                  "run_id": run_id or "n/a",
+                  "generated_at_utc": now,
               },
               "runtime_provenance": {
                   "repository": repository,
@@ -902,6 +983,7 @@ jobs:
               "decision": decision,
               "command": cmd,
               "bounded_scope": audit["bounded_scope"],
+              "triage_summary": audit["triage_summary"] if (supported and cmd == "review") else {},
               "runtime_provenance": audit["runtime_provenance"],
               "generated_at_utc": now,
           }
