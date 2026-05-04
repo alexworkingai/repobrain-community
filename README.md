@@ -16,7 +16,7 @@ Supported:
 - `/repobrain help`
 - `/repobrain doctor`
 - `/repobrain ask ...`
-- `/repobrain review` as bounded Review-Lite PR triage
+- `/repobrain review` as fast bounded Review-Lite PR triage
 
 Unsupported:
 
@@ -74,7 +74,7 @@ Supported: help · doctor · ask · review-lite
 Unsupported: fix
 Setup notes:
 - one RepoBrain responder is expected
-- Review-Lite is read-only PR triage
+- Review-Lite is fast read-only PR triage
 - answers use visible repo/PR context only
 - if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment
 Next step: /repobrain ask what is this PR about?
@@ -87,6 +87,7 @@ Next step: /repobrain ask what is this PR about?
 PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
 Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
+Change areas: docs / validation
 Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed
 Next safe step: /repobrain ask what changed here?
 ```
@@ -94,7 +95,7 @@ Next safe step: /repobrain ask what changed here?
 `/repobrain fix`
 
 ```text
-RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain ask`, and bounded `/repobrain review`.
+RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, and fast bounded `/repobrain review`.
 Received: `/repobrain fix`.
 This bounded behavior is intentional for the current external GitHub foundation stage.
 ```
@@ -115,7 +116,7 @@ This bounded behavior is intentional for the current external GitHub foundation 
 
 - `/repobrain doctor` verifies the external setup surface only.
 - `/repobrain doctor` does not repair workflows or installation problems.
-- Review-Lite is read-only PR triage.
+- Review-Lite is fast read-only PR triage.
 - Ask and Review-Lite use visible repo/PR context only.
 - No full external review parity is claimed.
 - No bug finding claims are made.
