@@ -363,7 +363,37 @@ jobs:
                   summary_bits.append(f"changed files: {pull.get('changed_files')}")
               return " ".join(summary_bits).strip(), files[:6]
 
-          def render_compact_answer(query: str, summary: str, details: list[tuple[str, str]] | None = None) -> str:
+          def format_changed_files(pr_files: list[str]) -> str:
+              if not pr_files:
+                  return ""
+              visible = pr_files[:4]
+              text = ", ".join(f"`{name}`" for name in visible)
+              extra = len(pr_files) - len(visible)
+              if extra > 0:
+                  text += f" (+{extra} more)"
+              return text
+
+          def suggest_next_questions(pr_context_available: bool, has_components: bool) -> str:
+              options = []
+              if pr_context_available:
+                  options.append("`/repobrain ask what changed here?`")
+                  options.append("`/repobrain ask what is this PR about?`")
+              if has_components:
+                  options.append("`/repobrain ask what are the main components?`")
+              options.append("`/repobrain ask what does this repository do?`")
+              deduped = []
+              for item in options:
+                  if item not in deduped:
+                      deduped.append(item)
+              return ", ".join(deduped[:3])
+
+          def render_compact_answer(
+              query: str,
+              summary: str,
+              details: list[tuple[str, str]] | None = None,
+              note: str = "",
+              next_question: str = "",
+          ) -> str:
               lines = [
                   "## RepoBrain Ask",
                   f"**Question** `{query}`",
@@ -374,6 +404,10 @@ jobs:
                   lines.append("")
                   for label, value in compact_details:
                       lines.append(f"- **{label}:** {truncate(value, 260)}")
+              if norm(note):
+                  lines.append(f"- **Note:** {truncate(note, 240)}")
+              if norm(next_question):
+                  lines.append(f"- **Try next:** {truncate(next_question, 240)}")
               return "\n".join(lines)
 
           def answer_repo_aware(query: str, repository: str, repo_root: Path, pr_context: dict) -> str:
@@ -384,19 +418,32 @@ jobs:
               pr_summary, pr_files = summarize_pr(pr_context)
               repo_name = repository.split("/")[-1] if repository else repo_root.name
 
-              purpose_text = readme_summary or manifest_summary or f"`{repo_name}` is a repository with bounded external foundation access."
-              manifest_text = manifest_summary or "No package/manifest summary was detected in the bounded scan."
-              components_text = ", ".join(f"`{name}`" for name in component_names) if component_names else "No obvious top-level components were detected in the bounded scan."
-              files_text = ", ".join(f"`{name}`" for name in pr_files) if pr_files else "No PR file list was available."
+              purpose_text = readme_summary or manifest_summary
+              if not purpose_text and component_names:
+                  purpose_text = f"`{repo_name}` appears to center on {', '.join(f'`{name}`' for name in component_names[:3])} based on a bounded top-level scan."
+              if not purpose_text and pr_summary:
+                  purpose_text = f"`{repo_name}` has limited repository metadata in the bounded scan; the clearest available signal comes from the current PR."
+              if not purpose_text:
+                  purpose_text = f"`{repo_name}` has limited descriptive metadata in the bounded external path."
+
+              manifest_text = manifest_summary or ""
+              components_text = ", ".join(f"`{name}`" for name in component_names) if component_names else ""
+              files_text = format_changed_files(pr_files)
+              weak_context = not readme_summary and not manifest_summary
+              pr_context_available = bool(pr_context.get("is_pull_request"))
+              next_questions = suggest_next_questions(pr_context_available, bool(component_names))
+              weak_context_note = ""
+              if weak_context:
+                  weak_context_note = "Repository context is limited here, so this answer relies on top-level files and any visible PR metadata."
 
               if "pr" in lowered and any(token in lowered for token in ("about", "change", "changed", "what is this")):
                   pr_line = pr_summary or "PR metadata was not available in the bounded external path."
                   return render_compact_answer(
                       query,
                       pr_line,
-                      [
-                          ("Changed files", files_text),
-                      ],
+                      [("Changed files", files_text)],
+                      note="" if pr_summary else "This PR has very little title/body context in the bounded external path.",
+                      next_question=next_questions if not pr_summary else "",
                   )
 
               if any(token in lowered for token in ("what changed", "changed here", "files changed", "change here")):
@@ -404,36 +451,45 @@ jobs:
                   return render_compact_answer(
                       query,
                       change_line,
-                      [
-                          ("Changed files", files_text),
-                      ],
+                      [("Changed files", files_text)],
+                      note="" if files_text else "Changed-file context is limited, so the summary falls back to the best repository signal available.",
+                      next_question=next_questions if not files_text else "",
                   )
 
               if any(token in lowered for token in ("main components", "components", "main modules", "structure")):
                   return render_compact_answer(
                       query,
-                      f"Main visible components center on {components_text}.",
+                      f"Main visible components center on {components_text or 'a small set of top-level files that do not expose strong component boundaries yet'}.",
                       [
                           ("Repository summary", truncate(purpose_text, 220)),
                       ],
+                      note=weak_context_note if weak_context else "",
+                      next_question=next_questions if weak_context else "",
                   )
 
               if any(token in lowered for token in ("what does this repository do", "purpose of this repository", "what is this repository", "what does this repo do", "repository do")):
+                  details = []
+                  if manifest_text:
+                      details.append(("Manifest signal", truncate(manifest_text, 220)))
+                  if components_text:
+                      details.append(("Main visible components", components_text))
                   return render_compact_answer(
                       query,
                       purpose_text,
-                      [
-                          ("Manifest signal", truncate(manifest_text, 220)),
-                          ("Main visible components", components_text),
-                      ],
+                      details,
+                      note=weak_context_note if weak_context else "",
+                      next_question=next_questions if weak_context else "",
                   )
 
+              vague_query = len(query.split()) <= 4 and not any(token in lowered for token in ("repository", "repo", "pr", "change", "component", "purpose"))
               return render_compact_answer(
                   query,
                   purpose_text,
                   [
                       ("Relevant context", truncate(pr_summary, 180) if pr_summary else ""),
                   ],
+                  note=weak_context_note if weak_context else ("This is a bounded quick answer; a more specific question usually produces a sharper result." if vague_query else ""),
+                  next_question=next_questions if (weak_context or vague_query) else "",
               )
 
           def reason_for_status(overall_status: str, fail_codes: set[str]):
@@ -496,16 +552,24 @@ jobs:
                   "Supported now:\n"
                   "- `/repobrain help`\n"
                   "- `/repobrain ask <question>`\n\n"
+                  "Best first questions:\n"
+                  "- `/repobrain ask what does this repository do?`\n"
+                  "- `/repobrain ask what is this PR about?`\n"
+                  "- `/repobrain ask what changed here?`\n\n"
                   "Unsupported (explicitly blocked):\n"
                   "- `/repobrain review`\n"
-                  "- `/repobrain fix`\n"
+                  "- `/repobrain fix`\n\n"
+                  "Bounded behavior note:\n"
+                  "- answers use visible repo and PR context only\n"
+                  "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
               )
           elif not query:
               status = "blocked"
               decision = "ASK_QUERY_MISSING"
               body = (
                   "RepoBrain ask request is missing a question.\n"
-                  "Usage: `/repobrain ask <question>`"
+                  "Usage: `/repobrain ask <question>`\n"
+                  "Try: `/repobrain ask what does this repository do?`"
               )
           else:
               status = "success"
