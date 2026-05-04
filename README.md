@@ -19,8 +19,8 @@ Reusable workflow host:
 
 Current bounded contract:
 
-- supported: `/repobrain help`, `/repobrain ask ...`
-- unsupported (explicit block): `/repobrain review`, `/repobrain fix`, out-of-contract commands
+- supported: `/repobrain help`, `/repobrain ask ...`, `/repobrain review` (bounded Review-Lite PR triage)
+- unsupported (explicit block): `/repobrain fix`, out-of-contract commands
 
 Third-party caller workflow shape:
 
@@ -36,3 +36,20 @@ jobs:
       caller_event_name: ${{ github.event_name }}
     secrets: inherit
 ```
+
+## Community Trial Path
+
+Use this short path for first external trial users:
+
+1. Install or call the reusable workflow from `alexworkingai/repobrain-community/.github/workflows/repobrain_external_foundation.yml@main`.
+2. Open a small PR in the target repository.
+3. Run `/repobrain help`.
+4. Run `/repobrain ask what is this PR about?`
+5. Run `/repobrain review`.
+6. Confirm `/repobrain fix` is blocked explicitly.
+
+Bounded trial notes:
+
+- Review-Lite is read-only PR triage.
+- Ask and Review-Lite use visible repo/PR context only.
+- No full review, fix generation, or security claims are made.
