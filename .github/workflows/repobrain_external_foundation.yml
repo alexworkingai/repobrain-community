@@ -423,6 +423,99 @@ jobs:
                   return ""
               return " / ".join(change_areas)
 
+          def discover_guidance_files(repo_root: Path) -> list[Path]:
+              found = []
+              for rel in [".github/repobrain.instructions.md", "AGENTS.md"]:
+                  path = repo_root / rel
+                  try:
+                      if path.exists() and path.is_file() and not path.is_symlink():
+                          found.append(path)
+                  except Exception:
+                      continue
+              return found
+
+          def collect_guidance_lines(paths: list[Path], limit: int = 16) -> list[str]:
+              lines = []
+              for path in paths:
+                  text = read_text(path, 8000)
+                  if not text:
+                      continue
+                  in_code = False
+                  for raw in text.splitlines():
+                      line = raw.strip()
+                      if line.startswith("```"):
+                          in_code = not in_code
+                          continue
+                      if in_code or not line:
+                          continue
+                      if line.startswith("#"):
+                          continue
+                      if line.startswith(("- ", "* ")):
+                          line = line[2:].strip()
+                      if len(line) < 8:
+                          continue
+                      lines.append(collapse_ws(line))
+                      if len(lines) >= limit:
+                          return lines
+              return lines
+
+          def build_guidance_context(repo_root: Path, pr_files: list[str], change_areas: list[str]) -> dict:
+              files = discover_guidance_files(repo_root)
+              rel_files = [str(path.relative_to(repo_root)).replace("\\", "/") for path in files]
+              lines = collect_guidance_lines(files)
+              lowered_lines = [line.lower() for line in lines]
+              lowered_files = [norm(name).lower() for name in pr_files if norm(name)]
+              lower_areas = [area.lower() for area in change_areas]
+
+              categories = []
+              if any(any(token in line for token in ("deploy", "deployment", "config", "environment", "workflow")) for line in lowered_lines):
+                  categories.append("deployment/config caution")
+              if any(any(token in line for token in ("generated", "autogen", "auto-generated", "do not review generated")) for line in lowered_lines):
+                  categories.append("generated-file guidance")
+              if any(any(token in line for token in ("test", "tests", "lint", "build", "ci")) for line in lowered_lines):
+                  categories.append("build/test hints")
+              if any(any(token in line for token in ("auth", "secret", "credential", "sensitive")) for line in lowered_lines):
+                  categories.append("sensitive-path attention")
+              if any(any(token in line for token in ("small pr", "small prs", "small pull request", "prefer small")) for line in lowered_lines):
+                  categories.append("small-pr preference")
+
+              relevant = []
+              def add_relevant(text: str):
+                  if text and text not in relevant:
+                      relevant.append(text)
+
+              for line, low in zip(lines, lowered_lines):
+                  if len(relevant) >= 3:
+                      break
+                  if any(area in {"config", "infra", "manifest", "ci"} for area in lower_areas) and any(token in low for token in ("deploy", "deployment", "config", "environment", "workflow")):
+                      add_relevant(line)
+                  if any(area in {"docs", "validation"} for area in lower_areas) and any(token in low for token in ("generated", "small pr", "review focus", "docs")):
+                      add_relevant(line)
+                  if any(area == "tests" for area in lower_areas) and any(token in low for token in ("test", "lint", "build", "ci")):
+                      add_relevant(line)
+                  if any(token in low for token in ("auth", "secret", "credential", "sensitive")) and any(token in " ".join(lowered_files) for token in ("auth", "secret", "credential", "deploy", "config")):
+                      add_relevant(line)
+
+              guidance_summary = ""
+              if relevant:
+                  guidance_summary = truncate("; ".join(relevant[:2]), 180)
+              elif categories:
+                  guidance_summary = truncate("repo instructions highlight " + ", ".join(categories[:2]), 180)
+
+              return {
+                  "found": bool(rel_files),
+                  "files": rel_files,
+                  "summary": guidance_summary,
+                  "categories": categories[:4],
+                  "relevant_hints": relevant[:3],
+              }
+
+          def format_guidance_status(guidance: dict) -> str:
+              files = guidance.get("files") or []
+              if not files:
+                  return "not found"
+              return "found " + " · ".join(files[:2])
+
           def suggest_next_questions(pr_context_available: bool, has_components: bool) -> str:
               options = []
               if pr_context_available:
@@ -627,6 +720,7 @@ jobs:
               signal_lines: list[tuple[str, str]],
               files_text: str,
               change_areas_text: str = "",
+              guidance_text: str = "",
               note: str = "",
               next_question: str = "",
           ) -> str:
@@ -642,6 +736,8 @@ jobs:
                   lines.append(f"Changed files: {truncate(files_text, 260)}")
               if norm(change_areas_text):
                   lines.append(f"Change areas: {truncate(change_areas_text, 180)}")
+              if norm(guidance_text):
+                  lines.append(f"Guidance: {truncate(guidance_text, 180)}")
               lines.append("Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed")
               if norm(note):
                   lines.append(f"Note: {truncate(note, 220)}")
@@ -653,6 +749,7 @@ jobs:
               workflow_ref: str,
               workflow_path: str,
               event_name: str,
+              guidance_status: str,
           ) -> str:
               lines = [
                   "## RepoBrain Doctor",
@@ -661,6 +758,7 @@ jobs:
                   f"Host: {infer_host_display(workflow_ref)}",
                   f"Workflow: {workflow_path or '.github/workflows/repobrain.yml'}",
                   f"Event: {event_name or 'unknown'}",
+                  f"Guidance: {guidance_status}",
                   "Supported: help · doctor · ask · review-lite",
                   "Unsupported: fix",
                   "Setup notes:",
@@ -690,7 +788,11 @@ jobs:
 
               manifest_text = manifest_summary or ""
               components_text = ", ".join(f"`{name}`" for name in component_names) if component_names else ""
-              files_text = format_changed_files(pr_files, extract_changed_file_count(pr_context, pr_files))
+              changed_file_count = extract_changed_file_count(pr_context, pr_files)
+              files_text = format_changed_files(pr_files, changed_file_count)
+              change_areas = infer_change_areas(pr_files)
+              change_areas_text = format_change_areas(change_areas)
+              guidance = build_guidance_context(repo_root, pr_files, change_areas)
               weak_context = not readme_summary and not manifest_summary
               pr_context_available = bool(pr_context.get("is_pull_request"))
               next_questions = suggest_next_questions(pr_context_available, bool(component_names))
@@ -707,13 +809,14 @@ jobs:
               weak_context_note = ""
               if weak_context:
                   weak_context_note = "Repository context is limited here, so this answer relies on top-level files and any visible PR metadata."
+              guidance_text = guidance.get("summary") or ""
 
               if "pr" in lowered and any(token in lowered for token in ("about", "change", "changed", "what is this")):
                   pr_line = pr_summary or "PR metadata was not available in the bounded external path."
                   return render_compact_answer(
                       query,
                       pr_line,
-                      [("Changed files", files_text)],
+                      [("Guidance", guidance_text), ("Changed files", files_text), ("Change areas", change_areas_text)],
                       signal_lines=signal_lines,
                       note="" if pr_summary else "This PR has very little title/body context in the bounded external path.",
                       next_question=next_questions if not pr_summary else "",
@@ -724,10 +827,25 @@ jobs:
                   return render_compact_answer(
                       query,
                       change_line,
-                      [("Changed files", files_text)],
+                      [("Guidance", guidance_text), ("Changed files", files_text), ("Change areas", change_areas_text)],
                       signal_lines=signal_lines,
                       note="" if files_text else "Changed-file context is limited, so the summary falls back to the best repository signal available.",
                       next_question=next_questions if not files_text else "",
+                  )
+
+              if any(token in lowered for token in ("pay attention", "watch", "watch out", "careful", "caution", "focus on")):
+                  attention_summary = guidance_text or (
+                      f"This PR mainly touches {change_areas_text} in the bounded external view."
+                      if change_areas_text
+                      else "Visible PR context is limited, so there is no strong repo-specific attention hint yet."
+                  )
+                  return render_compact_answer(
+                      query,
+                      attention_summary,
+                      [("Guidance", guidance_text), ("Changed files", files_text), ("Change areas", change_areas_text)],
+                      signal_lines=signal_lines,
+                      note="" if guidance_text else "No repo guidance file matched this PR strongly, so this answer falls back to visible PR context only.",
+                      next_question=next_questions if not guidance_text else "",
                   )
 
               if any(token in lowered for token in ("main components", "components", "main modules", "structure")):
@@ -762,7 +880,9 @@ jobs:
                   query,
                   purpose_text,
                   [
+                      ("Guidance", guidance_text),
                       ("Relevant context", truncate(pr_summary, 180) if pr_summary else ""),
+                      ("Change areas", change_areas_text),
                   ],
                   signal_lines=signal_lines,
                   note=weak_context_note if weak_context else ("This is a bounded quick answer; a more specific question usually produces a sharper result." if vague_query else ""),
@@ -836,6 +956,8 @@ jobs:
                   "- `/repobrain ask what does this repository do?`\n"
                   "- `/repobrain ask what is this PR about?`\n"
                   "- `/repobrain ask what changed here?`\n\n"
+                  "Repo guidance:\n"
+                  "- RepoBrain can use `.github/repobrain.instructions.md` or `AGENTS.md` when present\n\n"
                   "Signal layer:\n"
                   "- ask and Review-Lite responses include short bounded signals for scope, type, and context strength\n- Review-Lite keeps changed files and change areas near the top for fast PR triage\n\n"
                   "Unsupported (explicitly blocked):\n"
@@ -882,6 +1004,7 @@ jobs:
           pr_summary_for_audit, pr_files_for_audit = summarize_pr(pr_context)
           review_changed_file_count = extract_changed_file_count(pr_context, pr_files_for_audit)
           review_change_areas = infer_change_areas(pr_files_for_audit)
+          guidance_context = build_guidance_context(repo_root, pr_files_for_audit, review_change_areas)
           review_signal_lines = build_signal_lines(
               "pr",
               readme_summary_for_review,
@@ -896,18 +1019,20 @@ jobs:
           if supported and cmd == "ask" and query:
               body = answer_repo_aware(query, repository, repo_root, pr_context)
           elif supported and cmd == "doctor":
-              body = render_doctor_card(workflow_ref, workflow_path, event_name)
+              body = render_doctor_card(workflow_ref, workflow_path, event_name, format_guidance_status(guidance_context))
           elif supported and cmd == "review":
               files_text = format_changed_files(pr_files_for_audit, review_changed_file_count)
               change_areas_text = format_change_areas(review_change_areas)
               review_note = ""
               if not pr_summary_for_audit:
                   review_note = "Visible PR title/body context is thin in this bounded external path."
+              review_guidance = guidance_context.get("summary") or ""
               body = render_review_lite(
                   pr_summary_for_audit,
                   review_signal_lines,
                   files_text,
                   change_areas_text=change_areas_text,
+                  guidance_text=review_guidance,
                   note=review_note,
                   next_question="`/repobrain ask what changed here?`",
               )
@@ -938,6 +1063,12 @@ jobs:
                   "pr_context_available": bool(pr_context.get("is_pull_request")),
                   "readme_present": any((repo_root / candidate).exists() for candidate in ("README.md", "README.rst", "README.txt", "readme.md")),
                   "manifest_present": any((repo_root / candidate).exists() for candidate in ("package.json", "pyproject.toml", "go.mod")),
+              },
+              "guidance_summary": {
+                  "guidance_found": bool(guidance_context.get("found")),
+                  "guidance_files": guidance_context.get("files") or [],
+                  "guidance_categories": guidance_context.get("categories") or [],
+                  "guidance_summary": guidance_context.get("summary") or "",
               },
               "triage_summary": {
                   "output_mode": "fast_triage_review_lite_v1" if (supported and cmd == "review") else "n/a",
@@ -983,6 +1114,7 @@ jobs:
               "decision": decision,
               "command": cmd,
               "bounded_scope": audit["bounded_scope"],
+              "guidance_summary": audit["guidance_summary"],
               "triage_summary": audit["triage_summary"] if (supported and cmd == "review") else {},
               "runtime_provenance": audit["runtime_provenance"],
               "generated_at_utc": now,

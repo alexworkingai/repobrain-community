@@ -49,6 +49,12 @@ This template:
 - calls the canonical public host in this repository,
 - does not rely on private/internal runtime wiring.
 
+Optional repo guidance:
+
+- RepoBrain can also read `.github/repobrain.instructions.md`
+- RepoBrain can use `AGENTS.md` when present
+- sample guidance file: `templates/repobrain.instructions.md`
+
 ## Expected Output Examples
 
 `/repobrain ask what is this PR about?`
@@ -61,6 +67,17 @@ Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
 ```
 
+`/repobrain ask what should I pay attention to here?`
+
+```text
+## RepoBrain Ask
+Question: what should I pay attention to here?
+Answer: This PR touches deployment config. Repo guidance marks deployment/config changes as caution areas.
+Signal: basis=PR · scope=small · type=config · context=strong
+Guidance: check deployment-related assumptions before merge
+Changed files: TRIAL_PR_MARKER.md
+```
+
 `/repobrain doctor`
 
 ```text
@@ -70,6 +87,7 @@ Surface: external GitHub foundation
 Host: repobrain-community@main
 Workflow: .github/workflows/repobrain.yml
 Event: issue_comment
+Guidance: found .github/repobrain.instructions.md
 Supported: help · doctor · ask · review-lite
 Unsupported: fix
 Setup notes:
@@ -88,6 +106,7 @@ PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
 Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
 Change areas: docs / validation
+Guidance: repo instructions mark deployment/config changes as caution areas
 Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed
 Next safe step: /repobrain ask what changed here?
 ```
@@ -106,7 +125,9 @@ This bounded behavior is intentional for the current external GitHub foundation 
 - open a small PR
 - run `/repobrain doctor`
 - run `/repobrain help`
+- optionally add `.github/repobrain.instructions.md`
 - run `/repobrain ask what is this PR about?`
+- run `/repobrain ask what should I pay attention to here?`
 - run `/repobrain review`
 - confirm `/repobrain fix` is blocked
 - verify one response per command
@@ -116,6 +137,7 @@ This bounded behavior is intentional for the current external GitHub foundation 
 
 - `/repobrain doctor` verifies the external setup surface only.
 - `/repobrain doctor` does not repair workflows or installation problems.
+- Repo guidance is optional and limited to `.github/repobrain.instructions.md` and `AGENTS.md`.
 - Review-Lite is fast read-only PR triage.
 - Ask and Review-Lite use visible repo/PR context only.
 - No full external review parity is claimed.
@@ -123,3 +145,24 @@ This bounded behavior is intentional for the current external GitHub foundation 
 - No vulnerability/security claims are made.
 - No fix suggestions or patch generation are performed.
 - No autonomous agent behavior is claimed.
+
+
+## Optional Repo Guidance Example
+
+Copy one of these files into your repository when you want short repo-specific hints:
+
+- `.github/repobrain.instructions.md`
+- `AGENTS.md`
+
+Example:
+
+```md
+Review priorities:
+- Treat auth and deployment changes as high attention.
+- Prefer small PRs.
+- Generated files should not drive review focus.
+
+Build/test hints:
+- Run npm test for app changes.
+- Run npm run lint for TypeScript changes.
+```
