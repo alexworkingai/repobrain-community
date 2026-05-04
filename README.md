@@ -14,6 +14,7 @@ Use this repository when you want a first external GitHub-native RepoBrain setup
 Supported:
 
 - `/repobrain help`
+- `/repobrain doctor`
 - `/repobrain ask ...`
 - `/repobrain review` as bounded Review-Lite PR triage
 
@@ -27,10 +28,11 @@ Unsupported:
 1. Copy `templates/repobrain.yml` into your own repository as `.github/workflows/repobrain.yml`.
 2. Commit the workflow file.
 3. Open a small PR in your repository.
-4. Run `/repobrain help`.
-5. Run `/repobrain ask what is this PR about?`
-6. Run `/repobrain review`.
-7. Confirm `/repobrain fix` is blocked explicitly.
+4. Run `/repobrain doctor`.
+5. Run `/repobrain help`.
+6. Run `/repobrain ask what is this PR about?`
+7. Run `/repobrain review`.
+8. Confirm `/repobrain fix` is blocked explicitly.
 
 The reusable workflow host is:
 
@@ -59,6 +61,25 @@ Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
 ```
 
+`/repobrain doctor`
+
+```text
+## RepoBrain Doctor
+Status: connected
+Surface: external GitHub foundation
+Host: repobrain-community@main
+Workflow: .github/workflows/repobrain.yml
+Event: issue_comment
+Supported: help · doctor · ask · review-lite
+Unsupported: fix
+Setup notes:
+- one RepoBrain responder is expected
+- Review-Lite is read-only PR triage
+- answers use visible repo/PR context only
+- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment
+Next step: /repobrain ask what is this PR about?
+```
+
 `/repobrain review`
 
 ```text
@@ -66,9 +87,7 @@ Changed files: TRIAL_PR_MARKER.md
 PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
 Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
-Watch points:
-- read-only triage based on visible PR context
-- no deep code review, fix generation, or security claims performed
+Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed
 Next safe step: /repobrain ask what changed here?
 ```
 
@@ -84,6 +103,7 @@ This bounded behavior is intentional for the current external GitHub foundation 
 
 - copy `templates/repobrain.yml` into `.github/workflows/repobrain.yml`
 - open a small PR
+- run `/repobrain doctor`
 - run `/repobrain help`
 - run `/repobrain ask what is this PR about?`
 - run `/repobrain review`
@@ -93,6 +113,8 @@ This bounded behavior is intentional for the current external GitHub foundation 
 
 ## Bounded Notes / Non-Claims
 
+- `/repobrain doctor` verifies the external setup surface only.
+- `/repobrain doctor` does not repair workflows or installation problems.
 - Review-Lite is read-only PR triage.
 - Ask and Review-Lite use visible repo/PR context only.
 - No full external review parity is claimed.
