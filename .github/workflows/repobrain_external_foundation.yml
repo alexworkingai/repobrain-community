@@ -387,10 +387,89 @@ jobs:
                       deduped.append(item)
               return ", ".join(deduped[:3])
 
+          def infer_signal_scope(pr_context: dict, component_names: list[str]) -> str:
+              pull = pr_context.get("pull_request") or {}
+              changed_files = int(pull.get("changed_files") or 0)
+              if changed_files:
+                  if changed_files <= 3:
+                      return "small"
+                  if changed_files <= 10:
+                      return "medium"
+                  return "large"
+              if len(component_names) >= 5:
+                  return "medium"
+              if component_names:
+                  return "small"
+              return "unknown"
+
+          def infer_signal_type(pr_files: list[str], manifest_summary: str, component_names: list[str]) -> str:
+              files = [name.lower() for name in pr_files if norm(name)]
+              if not files:
+                  if manifest_summary:
+                      return "app"
+                  if any(name.lower() in {"infra", "deploy", "ops"} for name in component_names):
+                      return "infra"
+                  return "mixed"
+
+              docs_like = all(
+                  name.endswith((".md", ".rst", ".txt")) or "/docs/" in f"/{name}/" or name.startswith("docs/")
+                  for name in files
+              )
+              config_like = all(
+                  name.endswith((".yml", ".yaml", ".json", ".toml", ".ini")) or
+                  any(token in name for token in ("docker", "compose", ".github/workflows", "config"))
+                  for name in files
+              )
+              infra_hits = sum(
+                  1 for name in files
+                  if any(token in name for token in ("docker", "compose", ".github/workflows", "deploy", "terraform", "infra"))
+              )
+              code_hits = sum(
+                  1 for name in files
+                  if name.endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb"))
+              )
+
+              if docs_like:
+                  return "docs"
+              if config_like and not code_hits:
+                  return "config"
+              if infra_hits and not code_hits:
+                  return "infra"
+              if infra_hits and code_hits:
+                  return "mixed"
+              if code_hits:
+                  return "feature"
+              return "mixed"
+
+          def infer_signal_context_strength(
+              readme_summary: str,
+              manifest_summary: str,
+              pr_summary: str,
+              pr_files: list[str],
+              component_names: list[str],
+          ) -> str:
+              score = 0
+              if readme_summary:
+                  score += 2
+              if manifest_summary:
+                  score += 1
+              if pr_summary:
+                  score += 2
+              if pr_files:
+                  score += 1
+              if component_names:
+                  score += 1
+              if score >= 5:
+                  return "strong"
+              if score >= 3:
+                  return "moderate"
+              return "weak"
+
           def render_compact_answer(
               query: str,
               summary: str,
               details: list[tuple[str, str]] | None = None,
+              signal_lines: list[tuple[str, str]] | None = None,
               note: str = "",
               next_question: str = "",
           ) -> str:
@@ -399,6 +478,12 @@ jobs:
                   f"**Question** `{query}`",
                   f"**Answer** {truncate(summary, 300)}",
               ]
+              compact_signal = [(label, norm(value)) for label, value in (signal_lines or []) if norm(value)]
+              if compact_signal:
+                  lines.append("")
+                  lines.append("**Signal**")
+                  for label, value in compact_signal:
+                      lines.append(f"- **{label}:** {truncate(value, 80)}")
               compact_details = [(label, norm(value)) for label, value in (details or []) if norm(value)]
               if compact_details:
                   lines.append("")
@@ -432,6 +517,11 @@ jobs:
               weak_context = not readme_summary and not manifest_summary
               pr_context_available = bool(pr_context.get("is_pull_request"))
               next_questions = suggest_next_questions(pr_context_available, bool(component_names))
+              signal_lines = [
+                  ("scope", infer_signal_scope(pr_context, component_names)),
+                  ("type", infer_signal_type(pr_files, manifest_summary, component_names)),
+                  ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names)),
+              ]
               weak_context_note = ""
               if weak_context:
                   weak_context_note = "Repository context is limited here, so this answer relies on top-level files and any visible PR metadata."
@@ -442,6 +532,7 @@ jobs:
                       query,
                       pr_line,
                       [("Changed files", files_text)],
+                      signal_lines=signal_lines,
                       note="" if pr_summary else "This PR has very little title/body context in the bounded external path.",
                       next_question=next_questions if not pr_summary else "",
                   )
@@ -452,6 +543,7 @@ jobs:
                       query,
                       change_line,
                       [("Changed files", files_text)],
+                      signal_lines=signal_lines,
                       note="" if files_text else "Changed-file context is limited, so the summary falls back to the best repository signal available.",
                       next_question=next_questions if not files_text else "",
                   )
@@ -463,6 +555,7 @@ jobs:
                       [
                           ("Repository summary", truncate(purpose_text, 220)),
                       ],
+                      signal_lines=signal_lines,
                       note=weak_context_note if weak_context else "",
                       next_question=next_questions if weak_context else "",
                   )
@@ -477,6 +570,7 @@ jobs:
                       query,
                       purpose_text,
                       details,
+                      signal_lines=signal_lines,
                       note=weak_context_note if weak_context else "",
                       next_question=next_questions if weak_context else "",
                   )
@@ -488,6 +582,7 @@ jobs:
                   [
                       ("Relevant context", truncate(pr_summary, 180) if pr_summary else ""),
                   ],
+                  signal_lines=signal_lines,
                   note=weak_context_note if weak_context else ("This is a bounded quick answer; a more specific question usually produces a sharper result." if vague_query else ""),
                   next_question=next_questions if (weak_context or vague_query) else "",
               )
@@ -556,6 +651,8 @@ jobs:
                   "- `/repobrain ask what does this repository do?`\n"
                   "- `/repobrain ask what is this PR about?`\n"
                   "- `/repobrain ask what changed here?`\n\n"
+                  "Signal layer:\n"
+                  "- ask responses include short bounded signals for scope, type, and context strength\n\n"
                   "Unsupported (explicitly blocked):\n"
                   "- `/repobrain review`\n"
                   "- `/repobrain fix`\n\n"
