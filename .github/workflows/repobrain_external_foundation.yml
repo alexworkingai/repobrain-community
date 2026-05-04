@@ -63,7 +63,7 @@ jobs:
             cmd="help"
           fi
           cmd="$(echo "$cmd" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$cmd" == "help" || "$cmd" == "ask" || "$cmd" == "review" ]]; then
+          if [[ "$cmd" == "help" || "$cmd" == "doctor" || "$cmd" == "ask" || "$cmd" == "review" ]]; then
             supported="1"
           else
             supported="0"
@@ -522,6 +522,16 @@ jobs:
                   return ""
               return " · ".join(f"{label}={truncate(value, 40)}" for label, value in compact_signal)
 
+          def infer_host_display(workflow_ref: str) -> str:
+              value = norm(workflow_ref)
+              if not value:
+                  return "repobrain-community@main"
+              ref = value
+              if "@" in ref:
+                  ref = ref.split("@", 1)[1]
+              ref = ref.replace("refs/heads/", "").replace("refs/tags/", "")
+              return f"repobrain-community@{ref or 'main'}"
+
           def build_signal_lines(
               basis: str,
               readme_summary: str,
@@ -567,13 +577,34 @@ jobs:
                   lines.append(f"Signal: {signal_text}")
               if norm(files_text):
                   lines.append(f"Changed files: {truncate(files_text, 260)}")
-              lines.append("Watch points:")
-              lines.append("- read-only triage based on visible PR context")
-              lines.append("- no deep code review, fix generation, or security claims performed")
+              lines.append("Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed")
               if norm(note):
-                  lines.append(f"- note: {truncate(note, 220)}")
+                  lines.append(f"Note: {truncate(note, 220)}")
               if norm(next_question):
                   lines.append(f"Next safe step: {truncate(next_question, 220)}")
+              return "\n".join(lines)
+
+          def render_doctor_card(
+              workflow_ref: str,
+              workflow_path: str,
+              event_name: str,
+          ) -> str:
+              lines = [
+                  "## RepoBrain Doctor",
+                  "Status: connected",
+                  "Surface: external GitHub foundation",
+                  f"Host: {infer_host_display(workflow_ref)}",
+                  f"Workflow: {workflow_path or '.github/workflows/repobrain.yml'}",
+                  f"Event: {event_name or 'unknown'}",
+                  "Supported: help · doctor · ask · review-lite",
+                  "Unsupported: fix",
+                  "Setup notes:",
+                  "- one RepoBrain responder is expected",
+                  "- Review-Lite is read-only PR triage",
+                  "- answers use visible repo/PR context only",
+                  "- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment",
+                  "Next step: /repobrain ask what is this PR about?",
+              ]
               return "\n".join(lines)
 
           def answer_repo_aware(query: str, repository: str, repo_root: Path, pr_context: dict) -> str:
@@ -721,7 +752,7 @@ jobs:
               status = "blocked"
               decision = "UNSUPPORTED_COMMAND"
               body = (
-                  "RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain ask`, and bounded `/repobrain review`.\n"
+                  "RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, and bounded `/repobrain review`.\n"
                   f"Received: `/repobrain {cmd}`.\n"
                   "This bounded behavior is intentional for the current external GitHub foundation stage."
               )
@@ -732,8 +763,10 @@ jobs:
                   "## RepoBrain External GitHub Foundation\n"
                   "Supported now:\n"
                   "- `/repobrain help`\n"
+                  "- `/repobrain doctor`\n"
                   "- `/repobrain ask <question>`\n"
                   "- `/repobrain review` - bounded Review-Lite PR triage\n\n"
+                  "Use `/repobrain doctor` to verify the external setup surface.\n\n"
                   "Best first questions:\n"
                   "- `/repobrain ask what does this repository do?`\n"
                   "- `/repobrain ask what is this PR about?`\n"
@@ -748,6 +781,9 @@ jobs:
                   "- Review-Lite does not generate fixes or claim full review parity\n"
                   "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
               )
+          elif cmd == "doctor":
+              status = "success"
+              decision = "DOCTOR"
           elif cmd == "review":
               status = "success"
               decision = "REVIEW_LITE"
@@ -778,6 +814,8 @@ jobs:
 
           if supported and cmd == "ask" and query:
               body = answer_repo_aware(query, repository, repo_root, pr_context)
+          elif supported and cmd == "doctor":
+              body = render_doctor_card(workflow_ref, workflow_path, event_name)
           elif supported and cmd == "review":
               readme_summary = extract_readme_summary(repo_root)
               manifest_summary = extract_manifest_summary(repo_root)
@@ -818,11 +856,12 @@ jobs:
               "query": query,
               "answer_mode": (
                   "repo_aware_compact_v1" if (supported and cmd == "ask" and query)
+                  else "doctor_setup_health_v1" if (supported and cmd == "doctor")
                   else "review_lite_pr_triage_v1" if (supported and cmd == "review")
                   else "bounded_foundation_v1"
               ),
               "bounded_scope": {
-                  "supported_commands": ["help", "ask", "review"],
+                  "supported_commands": ["help", "doctor", "ask", "review"],
                   "unsupported_commands": ["fix"],
               },
               "context_summary": {
@@ -885,7 +924,7 @@ jobs:
               f"- Status: `{status}`\n"
               f"- Decision: `{decision}`\n"
               f"- Command: `{cmd}`\n"
-              "- Supported scope: `help`, `ask`, `review`\n"
+              "- Supported scope: `help`, `doctor`, `ask`, `review`\n"
               "- Unsupported scope: `fix`\n"
           )
           Path("artifacts/evidence_pack/repobrain_tkya_evidence_pack.md").write_text(evidence_md, encoding="utf-8")
