@@ -9,6 +9,27 @@ Use this repository when you want a first external GitHub-native RepoBrain setup
 - public-safe,
 - easy to trial on a small PR.
 
+## RepoBrain Community Preview
+
+What works now:
+
+- copyable install template
+- `/repobrain doctor`
+- `/repobrain ask ...`
+- `/repobrain review` as bounded read-only Review v1
+- `/repobrain fix` as bounded Fix-Lite suggestion-only mode
+- optional repo guidance from `.github/repobrain.instructions.md` or `AGENTS.md`
+
+Known limits:
+
+- Fix-Lite is suggestion-only and may return `blocked` or `not applicable`
+- no patch application, file modification, commit creation, branch push, or PR creation
+- Review v1 is bounded and read-only
+- output quality depends on visible PR/repo context
+- guidance quality depends on short useful repo instructions
+- no bug or security verdicts
+- no full external review parity claim
+
 ## What This Supports
 
 Supported:
@@ -26,14 +47,15 @@ Unsupported:
 ## Quick Install
 
 1. Copy `templates/repobrain.yml` into your own repository as `.github/workflows/repobrain.yml`.
-2. Commit the workflow file.
-3. Open a small PR in your repository.
-4. Run `/repobrain doctor`.
-5. Run `/repobrain help`.
-6. Run `/repobrain ask what is this PR about?`
-7. Run `/repobrain review`.
-8. Run `/repobrain fix`.
-9. Confirm no patch was applied and no files were modified.
+2. Optionally copy `templates/repobrain.instructions.md` into `.github/repobrain.instructions.md`.
+3. Commit the workflow file.
+4. Open a small PR in your repository.
+5. Run `/repobrain doctor`.
+6. Run `/repobrain help`.
+7. Run `/repobrain ask what is this PR about?`
+8. Run `/repobrain review`.
+9. Run `/repobrain fix`.
+10. Confirm no patch was applied and no files were modified.
 
 The reusable workflow host is:
 
@@ -55,6 +77,25 @@ Optional repo guidance:
 - RepoBrain can also read `.github/repobrain.instructions.md`
 - RepoBrain can use `AGENTS.md` when present
 - sample guidance file: `templates/repobrain.instructions.md`
+
+## First External User Path
+
+1. Copy `templates/repobrain.yml` into `.github/workflows/repobrain.yml`.
+2. Optionally copy `templates/repobrain.instructions.md` into `.github/repobrain.instructions.md`.
+3. Open a small PR.
+4. Run `/repobrain doctor`.
+5. Run `/repobrain ask what is this PR about?`
+6. Run `/repobrain review`
+7. Run `/repobrain fix`
+8. Interpret the Fix-Lite outcome
+
+Fix-Lite outcomes:
+
+- `suggestion available` means RepoBrain found a narrow manual direction worth trying
+- `blocked` means the visible scope is too broad or sensitive for a safe suggestion-only fix
+- `not applicable` means no safe manual target was identifiable from bounded visible context
+
+Blocked and not-applicable outcomes are healthy bounded behavior, not necessarily errors.
 
 ## Expected Output Examples
 
@@ -143,6 +184,36 @@ Next safe step: /repobrain ask what should I change manually?
 - confirm no patch was applied and no files were modified
 - verify one response per command
 - verify no full review/fix/security claims are made
+
+## Support And Feedback
+
+If something looks wrong, open a GitHub issue and include:
+
+- repository name
+- command used
+- expected result
+- actual result
+- workflow run link
+- whether duplicate comments appeared
+- whether `.github/repobrain.instructions.md` or `AGENTS.md` is present
+
+If you want a ready-made report format, use `.github/ISSUE_TEMPLATE/repobrain-community-feedback.md`.
+
+## Release Validation Matrix
+
+| Command | Expected result |
+|---|---|
+| `/repobrain doctor` | One response, guidance status shown if present, supported commands include fix-lite |
+| `/repobrain help` | One response, command truth matches current bounded surface |
+| `/repobrain ask what is this PR about?` | One response, compact PR-aware answer |
+| `/repobrain review` | One response, Review v1 card with bounded observations |
+| `/repobrain fix` | One response, Fix-Lite card with no-action guarantee |
+
+Also verify:
+
+- no duplicate comments
+- README/template examples match live behavior
+- no autofix, patch-application, bug, or security-review claims appear
 
 ## Bounded Notes / Non-Claims
 
