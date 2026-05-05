@@ -16,7 +16,7 @@ What works now:
 - copyable install template
 - `/repobrain doctor`
 - `/repobrain ask ...`
-- `/repobrain review` as bounded read-only Review v1
+- `/repobrain review` as bounded read-only Review Candidate
 - `/repobrain fix` as bounded Fix-Lite suggestion-only mode
 - optional repo guidance from `.github/repobrain.instructions.md` or `AGENTS.md`
 
@@ -24,7 +24,7 @@ Known limits:
 
 - Fix-Lite is suggestion-only and may return `blocked` or `not applicable`
 - no patch application, file modification, commit creation, branch push, or PR creation
-- Review v1 is bounded and read-only
+- Review Candidate is bounded and read-only
 - output quality depends on visible PR/repo context
 - guidance quality depends on short useful repo instructions
 - no bug or security verdicts
@@ -37,7 +37,7 @@ Supported:
 - `/repobrain help`
 - `/repobrain doctor`
 - `/repobrain ask ...`
-- `/repobrain review` as bounded read-only Review v1
+- `/repobrain review` as bounded read-only Review Candidate
 - `/repobrain fix` as bounded Fix-Lite suggestion-only mode
 
 Unsupported:
@@ -134,7 +134,7 @@ Supported: help · doctor · ask · review · fix-lite
 Unsupported: out-of-contract commands
 Setup notes:
 - one RepoBrain responder is expected
-- Surface supports bounded read-only Review v1
+- Surface supports bounded read-only Review Candidate
 - Fix-Lite is suggestion-only and does not modify files
 - answers use visible repo/PR context only
 - if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment
@@ -144,17 +144,33 @@ Next step: /repobrain ask what is this PR about?
 `/repobrain review`
 
 ```text
-## RepoBrain Review
+## RepoBrain Review Candidate
 PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
-Signal: basis=PR · scope=small · type=docs · context=strong
+Signal: basis=PR В· scope=small В· type=docs В· context=strong
 Changed files: TRIAL_PR_MARKER.md
 Change areas: docs / validation
 Guidance: repo instructions mark deployment/config changes as caution areas
+Attention: low based on visible change surface
+
+Review focus:
+- Small validation/docs change with limited visible scope.
+- Repo guidance prefers small PRs and de-emphasizes generated/artifact files.
 Review observations:
 - This PR appears validation-only and low-scope based on visible changed files.
 - Repo guidance prefers small PRs for external validation, which matches this change.
+- Limited diff context was available, so observations stay surface-level.
+
+Manual inspection points:
+- Confirm the PR intent matches the visible changed files.
+- Confirm this validation marker is intentionally part of the validation flow.
+
+Evidence:
+- changed files: 1
+- change areas: docs / validation
+- guidance: .github/repobrain.instructions.md
+- diff context: limited snippets available
 Bounded limits: read-only review; no fix generation; no security verdict.
-Next safe step: /repobrain ask what changed here?
+Next safe step: /repobrain fix
 ```
 
 `/repobrain fix`
@@ -206,7 +222,7 @@ If you want a ready-made report format, use `.github/ISSUE_TEMPLATE/repobrain-co
 | `/repobrain doctor` | One response, guidance status shown if present, supported commands include fix-lite |
 | `/repobrain help` | One response, command truth matches current bounded surface |
 | `/repobrain ask what is this PR about?` | One response, compact PR-aware answer |
-| `/repobrain review` | One response, Review v1 card with bounded observations |
+| `/repobrain review` | One response, Review Candidate card with focus, observations, manual inspection points, and evidence |
 | `/repobrain fix` | One response, Fix-Lite card with no-action guarantee |
 
 Also verify:
@@ -220,7 +236,8 @@ Also verify:
 - `/repobrain doctor` verifies the external setup surface only.
 - `/repobrain doctor` does not repair workflows or installation problems.
 - Repo guidance is optional and limited to `.github/repobrain.instructions.md` and `AGENTS.md`.
-- Review v1 is bounded read-only external review.
+- Review Candidate is bounded read-only external review.
+- Review Candidate uses visible PR context, limited diff context, and repo guidance.
 - Fix-Lite is bounded suggestion-only external guidance.
 - Ask and review use visible repo/PR context only.
 - Fix-Lite does not apply patches, modify files, or create commits.

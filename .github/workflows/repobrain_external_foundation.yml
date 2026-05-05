@@ -664,6 +664,91 @@ jobs:
                       deduped.append(value)
               return deduped[:4]
 
+          def infer_attention_text(
+              signal_map: dict,
+              change_areas: list[str],
+              guidance: dict,
+          ) -> str:
+              scope = norm(signal_map.get("scope")).lower() or "unknown"
+              lower_areas = {area.lower() for area in change_areas}
+              guidance_categories = set(guidance.get("categories") or [])
+              if lower_areas.intersection({"ci", "config", "infra", "manifest"}) or "deployment/config caution" in guidance_categories:
+                  return "needs manual attention based on visible change surface"
+              if scope == "large" or scope == "medium":
+                  return "moderate based on visible change surface"
+              if scope == "small":
+                  return "low based on visible change surface"
+              return ""
+
+          def build_review_focus(
+              pr_files: list[str],
+              change_areas: list[str],
+              guidance: dict,
+              signal_map: dict,
+              diff_context_available: bool,
+          ) -> list[str]:
+              focus = []
+              scope = norm(signal_map.get("scope")).lower() or "unknown"
+              change_type = norm(signal_map.get("type")).lower() or "mixed"
+              areas_text = format_change_areas(change_areas)
+              guidance_categories = guidance.get("categories") or []
+
+              if areas_text:
+                  focus.append(
+                      f"{scope.capitalize() if scope in {'small', 'medium', 'large'} else 'Bounded'} {change_type}-oriented change concentrated in {areas_text}."
+                  )
+              elif pr_files:
+                  focus.append(
+                      f"Visible changed files suggest a {change_type}-oriented change with {scope if scope != 'unknown' else 'limited'} visible scope."
+                  )
+
+              if "small-pr preference" in guidance_categories and scope == "small":
+                  focus.append("Repo guidance prefers small PRs, which matches the visible change surface here.")
+              if "generated-file guidance" in guidance_categories:
+                  focus.append("Repo guidance says generated or artifact files should not drive review focus.")
+              if "deployment/config caution" in guidance_categories and any(area.lower() in {"ci", "config", "infra", "manifest"} for area in change_areas):
+                  focus.append("Repo guidance marks workflow, config, or deployment-style changes as attention areas.")
+              if not diff_context_available:
+                  focus.append("Visible diff context is limited, so review focus stays at the changed-files level.")
+
+              deduped = []
+              for item in focus:
+                  value = norm(item)
+                  if value and value not in deduped:
+                      deduped.append(value)
+              return deduped[:3]
+
+          def build_manual_inspection_points(
+              pr_summary: str,
+              pr_files: list[str],
+              change_areas: list[str],
+              guidance: dict,
+              signal_map: dict,
+          ) -> list[str]:
+              points = []
+              lower_areas = {area.lower() for area in change_areas}
+              guidance_categories = set(guidance.get("categories") or [])
+              files_text = ", ".join(pr_files[:2])
+
+              points.append("Confirm the PR intent matches the visible changed files.")
+              if "validation" in lower_areas:
+                  points.append("Confirm the validation marker or validation-only change is intentionally part of the validation flow.")
+              if lower_areas.intersection({"ci", "config", "infra", "manifest"}):
+                  points.append("Inspect workflow, config, or deployment behavior manually before relying on this change.")
+              if "generated-file guidance" in guidance_categories:
+                  points.append("Confirm generated or artifact files are not being treated as the primary review input.")
+              if "src" not in lower_areas and lower_areas:
+                  points.append("Confirm this PR is not intended to change runtime behavior outside the visible change areas.")
+              elif pr_summary and files_text:
+                  points.append(f"Confirm the visible files ({files_text}) are the intended manual inspection surface.")
+
+              deduped = []
+              for item in points:
+                  value = norm(item)
+                  if value and value not in deduped:
+                      deduped.append(value)
+              return deduped[:3]
+
           def choose_fix_lite_outcome(
               pr_summary: str,
               pr_files: list[str],
@@ -967,19 +1052,23 @@ jobs:
                   ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="mixed")),
               ]
 
-          def render_review_v1(
+          def render_review_candidate(
               pr_summary: str,
               signal_lines: list[tuple[str, str]],
               files_text: str,
               change_areas_text: str = "",
               guidance_text: str = "",
+              attention_text: str = "",
+              review_focus: list[str] | None = None,
               observations: list[str] | None = None,
+              manual_inspection_points: list[str] | None = None,
+              evidence_lines: list[str] | None = None,
               review_context_limited: bool = False,
               next_question: str = "",
           ) -> str:
               summary_text = pr_summary or "Visible PR context is limited, so this bounded review stays close to sparse PR metadata only."
               lines = [
-                  "## RepoBrain Review",
+                  "## RepoBrain Review Candidate",
                   f"PR Summary: {truncate(summary_text, 300)}",
               ]
               signal_text = format_signal_inline(signal_lines)
@@ -991,10 +1080,31 @@ jobs:
                   lines.append(f"Change areas: {truncate(change_areas_text, 180)}")
               if norm(guidance_text):
                   lines.append(f"Guidance: {truncate(guidance_text, 180)}")
+              if norm(attention_text):
+                  lines.append(f"Attention: {truncate(attention_text, 120)}")
+              focus_lines = [truncate(item, 185) for item in (review_focus or []) if norm(item)]
+              if focus_lines:
+                  lines.append("")
+                  lines.append("Review focus:")
+                  for item in focus_lines[:3]:
+                      lines.append(f"- {item}")
               review_observations = [truncate(item, 185) for item in (observations or []) if norm(item)]
               if review_observations:
+                  lines.append("")
                   lines.append("Review observations:")
                   for item in review_observations[:4]:
+                      lines.append(f"- {item}")
+              inspection_lines = [truncate(item, 185) for item in (manual_inspection_points or []) if norm(item)]
+              if inspection_lines:
+                  lines.append("")
+                  lines.append("Manual inspection points:")
+                  for item in inspection_lines[:3]:
+                      lines.append(f"- {item}")
+              compact_evidence = [truncate(item, 120) for item in (evidence_lines or []) if norm(item)]
+              if compact_evidence:
+                  lines.append("")
+                  lines.append("Evidence:")
+                  for item in compact_evidence[:4]:
                       lines.append(f"- {item}")
               if review_context_limited:
                   lines.append("Bounded limits: read-only review; visible diff/content context is limited; no fix generation or security verdict.")
@@ -1054,7 +1164,7 @@ jobs:
                   "Unsupported: out-of-contract commands",
                   "Setup notes:",
                   "- one RepoBrain responder is expected",
-                  "- Surface supports bounded read-only Review v1",
+                  "- Surface supports bounded read-only Review Candidate",
                   "- Fix-Lite is suggestion-only and does not modify files",
                   "- answers use visible repo/PR context only",
                   "- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment",
@@ -1242,7 +1352,7 @@ jobs:
                   "- `/repobrain help`\n"
                   "- `/repobrain doctor`\n"
                   "- `/repobrain ask <question>`\n"
-                  "- `/repobrain review` - bounded read-only Review v1\n"
+                  "- `/repobrain review` - bounded read-only Review Candidate\n"
                   "- `/repobrain fix` - bounded Fix-Lite suggestion-only mode\n\n"
                   "Use `/repobrain doctor` to verify the external setup surface.\n\n"
                   "Best first questions:\n"
@@ -1252,12 +1362,12 @@ jobs:
                   "Repo guidance:\n"
                   "- RepoBrain can use `.github/repobrain.instructions.md` or `AGENTS.md` when present\n\n"
                   "Signal layer:\n"
-                  "- ask and review responses include short bounded signals for scope, type, and context strength\n- review keeps changed files, change areas, and bounded observations near the top for fast triage\n\n"
+                  "- ask and review responses include short bounded signals for scope, type, and context strength\n- review keeps changed files, change areas, guidance, manual inspection points, and evidence near the top for bounded triage\n\n"
                   "Unsupported (explicitly blocked):\n"
                   "- out-of-contract commands\n\n"
                   "Bounded behavior note:\n"
                   "- answers use visible repo and PR context only\n"
-                  "- review is read-only and based on bounded visible PR context only\n"
+                  "- review is read-only and based on bounded visible PR context, limited diff context, and repo guidance only\n"
                   "- review does not generate fixes or claim full review parity\n"
                   "- Fix-Lite does not apply patches, modify files, or create commits\n"
                   "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
@@ -1267,7 +1377,7 @@ jobs:
               decision = "DOCTOR"
           elif cmd == "review":
               status = "success"
-              decision = "REVIEW_V1"
+              decision = "REVIEW_CANDIDATE"
           elif cmd == "fix":
               status = "success"
               decision = "FIX_LITE"
@@ -1322,6 +1432,21 @@ jobs:
               review_patch_entries,
               review_changed_file_count,
           ) if supported and cmd == "review" else []
+          review_attention_text = infer_attention_text(review_signal_map, review_change_areas, guidance_context) if supported and cmd == "review" else ""
+          review_focus_lines = build_review_focus(
+              pr_files_for_audit,
+              review_change_areas,
+              guidance_context,
+              review_signal_map,
+              diff_context_available,
+          ) if supported and cmd == "review" else []
+          review_manual_points = build_manual_inspection_points(
+              pr_summary_for_audit,
+              pr_files_for_audit,
+              review_change_areas,
+              guidance_context,
+              review_signal_map,
+          ) if supported and cmd == "review" else []
           review_context_limited = bool(
               supported
               and cmd == "review"
@@ -1330,6 +1455,12 @@ jobs:
                   or review_changed_file_count > len(review_patch_entries)
               )
           )
+          review_evidence_lines = [
+              f"changed files: {review_changed_file_count}",
+              f"change areas: {format_change_areas(review_change_areas) or 'limited visible areas'}",
+              f"guidance: {format_guidance_status(guidance_context)}",
+              f"diff context: {'limited snippets available' if diff_context_available else 'not available'}",
+          ] if supported and cmd == "review" else []
           fix_signal_lines = build_signal_lines(
               "pr",
               readme_summary_for_review,
@@ -1358,15 +1489,19 @@ jobs:
               files_text = format_changed_files(pr_files_for_audit, review_changed_file_count)
               change_areas_text = format_change_areas(review_change_areas)
               review_guidance = guidance_context.get("summary") or ""
-              body = render_review_v1(
+              body = render_review_candidate(
                   pr_summary_for_audit,
                   review_signal_lines,
                   files_text,
                   change_areas_text=change_areas_text,
                   guidance_text=review_guidance,
+                  attention_text=review_attention_text,
+                  review_focus=review_focus_lines,
                   observations=review_observations,
+                  manual_inspection_points=review_manual_points,
+                  evidence_lines=review_evidence_lines,
                   review_context_limited=review_context_limited,
-                  next_question="`/repobrain ask what changed here?`",
+                  next_question="`/repobrain fix`",
               )
           elif supported and cmd == "fix":
               body = render_fix_lite(
@@ -1394,7 +1529,7 @@ jobs:
               "answer_mode": (
                   "repo_aware_compact_v1" if (supported and cmd == "ask" and query)
                   else "doctor_setup_health_v1" if (supported and cmd == "doctor")
-                  else "review_v1_read_only" if (supported and cmd == "review")
+                  else "review_candidate_read_only" if (supported and cmd == "review")
                   else "fix_lite_suggestion_only" if (supported and cmd == "fix")
                   else "bounded_foundation_v1"
               ),
@@ -1430,14 +1565,17 @@ jobs:
                   "generated_at_utc": now,
               },
               "triage_summary": {
-                  "output_mode": "review_v1_read_only" if (supported and cmd == "review") else "n/a",
+                  "output_mode": "review_candidate_read_only" if (supported and cmd == "review") else "n/a",
                   "changed_file_count": review_changed_file_count if (supported and cmd == "review") else 0,
                   "changed_files_sample": pr_files_for_audit[:4] if (supported and cmd == "review") else [],
                   "change_areas": review_change_areas if (supported and cmd == "review") else [],
                   "guidance_found": bool(guidance_context.get("found")) if (supported and cmd == "review") else False,
                   "guidance_files": (guidance_context.get("files") or []) if (supported and cmd == "review") else [],
+                  "attention_level": review_attention_text if (supported and cmd == "review") else "",
+                  "review_focus_count": len(review_focus_lines) if (supported and cmd == "review") else 0,
                   "review_context_limited": review_context_limited if (supported and cmd == "review") else False,
                   "review_observation_count": len(review_observations) if (supported and cmd == "review") else 0,
+                  "manual_inspection_count": len(review_manual_points) if (supported and cmd == "review") else 0,
                   "diff_context_available": diff_context_available if (supported and cmd == "review") else False,
                   "signal": review_signal_map if (supported and cmd == "review") else {},
                   "event_name": event_name or "n/a",
