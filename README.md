@@ -17,10 +17,10 @@ Supported:
 - `/repobrain doctor`
 - `/repobrain ask ...`
 - `/repobrain review` as bounded read-only Review v1
+- `/repobrain fix` as bounded Fix-Lite suggestion-only mode
 
 Unsupported:
 
-- `/repobrain fix`
 - out-of-contract commands
 
 ## Quick Install
@@ -32,7 +32,8 @@ Unsupported:
 5. Run `/repobrain help`.
 6. Run `/repobrain ask what is this PR about?`
 7. Run `/repobrain review`.
-8. Confirm `/repobrain fix` is blocked explicitly.
+8. Run `/repobrain fix`.
+9. Confirm no patch was applied and no files were modified.
 
 The reusable workflow host is:
 
@@ -88,11 +89,12 @@ Host: repobrain-community@main
 Workflow: .github/workflows/repobrain.yml
 Event: issue_comment
 Guidance: found .github/repobrain.instructions.md
-Supported: help · doctor · ask · review
-Unsupported: fix
+Supported: help · doctor · ask · review · fix-lite
+Unsupported: out-of-contract commands
 Setup notes:
 - one RepoBrain responder is expected
 - Surface supports bounded read-only Review v1
+- Fix-Lite is suggestion-only and does not modify files
 - answers use visible repo/PR context only
 - if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment
 Next step: /repobrain ask what is this PR about?
@@ -117,9 +119,14 @@ Next safe step: /repobrain ask what changed here?
 `/repobrain fix`
 
 ```text
-RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, and bounded `/repobrain review`.
-Received: `/repobrain fix`.
-This bounded behavior is intentional for the current external GitHub foundation stage.
+## RepoBrain Fix-Lite
+Mode: suggestion-only
+Status: not applicable
+Reason: visible change appears validation/docs-only and no safe fix target was identified.
+Signal: basis=PR · scope=small · type=docs · context=strong
+Guidance: prefer small PRs for external RepoBrain validation.
+No patch was applied. No files were modified.
+Next safe step: /repobrain ask what should I change manually?
 ```
 
 ## Community Trial Checklist
@@ -132,7 +139,8 @@ This bounded behavior is intentional for the current external GitHub foundation 
 - run `/repobrain ask what is this PR about?`
 - run `/repobrain ask what should I pay attention to here?`
 - run `/repobrain review`
-- confirm `/repobrain fix` is blocked
+- run `/repobrain fix`
+- confirm no patch was applied and no files were modified
 - verify one response per command
 - verify no full review/fix/security claims are made
 
@@ -142,11 +150,13 @@ This bounded behavior is intentional for the current external GitHub foundation 
 - `/repobrain doctor` does not repair workflows or installation problems.
 - Repo guidance is optional and limited to `.github/repobrain.instructions.md` and `AGENTS.md`.
 - Review v1 is bounded read-only external review.
+- Fix-Lite is bounded suggestion-only external guidance.
 - Ask and review use visible repo/PR context only.
+- Fix-Lite does not apply patches, modify files, or create commits.
 - No full external review parity is claimed.
 - No bug finding claims are made.
 - No vulnerability/security claims are made.
-- No fix suggestions or patch generation are performed.
+- No patch generation or autofix behavior is performed.
 - No autonomous agent behavior is claimed.
 
 

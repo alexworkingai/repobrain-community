@@ -63,7 +63,7 @@ jobs:
             cmd="help"
           fi
           cmd="$(echo "$cmd" | tr '[:upper:]' '[:lower:]')"
-          if [[ "$cmd" == "help" || "$cmd" == "doctor" || "$cmd" == "ask" || "$cmd" == "review" ]]; then
+          if [[ "$cmd" == "help" || "$cmd" == "doctor" || "$cmd" == "ask" || "$cmd" == "review" || "$cmd" == "fix" ]]; then
             supported="1"
           else
             supported="0"
@@ -223,19 +223,31 @@ jobs:
           def split_csv(v):
               return [x.strip() for x in str(v or "").split(",") if x.strip()]
 
+          def sanitize_public_text(text: str) -> str:
+              value = str(text or "")
+              replacements = {
+                  "вЂ¦": "...",
+                  "â€¦": "...",
+                  "…": "...",
+                  "\u00a0": " ",
+              }
+              for source, target in replacements.items():
+                  value = value.replace(source, target)
+              return value
+
           def read_text(path: Path, limit: int = 12000) -> str:
               try:
-                  return path.read_text(encoding="utf-8")[:limit]
+                  return sanitize_public_text(path.read_text(encoding="utf-8")[:limit])
               except UnicodeDecodeError:
                   try:
-                      return path.read_text(encoding="utf-8-sig")[:limit]
+                      return sanitize_public_text(path.read_text(encoding="utf-8-sig")[:limit])
                   except Exception:
                       return ""
               except Exception:
                   return ""
 
           def collapse_ws(text: str) -> str:
-              return re.sub(r"\s+", " ", norm(text))
+              return re.sub(r"\s+", " ", norm(sanitize_public_text(text)))
 
           def truncate(text: str, limit: int = 220) -> str:
               text = collapse_ws(text)
@@ -244,7 +256,30 @@ jobs:
               cut = text[: limit - 1].rstrip()
               if " " in cut:
                   cut = cut.rsplit(" ", 1)[0]
-              return cut + "вЂ¦"
+              return cut + "..."
+
+          def extract_pr_body_summary(text: str, limit: int = 140) -> str:
+              text = sanitize_public_text(text)
+              selected = []
+              in_code = False
+              for raw in str(text or "").splitlines():
+                  line = raw.strip()
+                  if line.startswith("```"):
+                      in_code = not in_code
+                      continue
+                  if in_code or not line:
+                      continue
+                  if line.startswith("#"):
+                      continue
+                  if line.startswith(("- ", "* ")):
+                      line = line[2:].strip()
+                  line = collapse_ws(line)
+                  if not line:
+                      continue
+                  selected.append(line)
+                  if len(" ".join(selected)) >= limit:
+                      break
+              return truncate(" ".join(selected), limit)
 
           def extract_readme_summary(repo_root: Path) -> str:
               for candidate in ("README.md", "README.rst", "README.txt", "readme.md"):
@@ -352,8 +387,8 @@ jobs:
 
           def summarize_pr(pr_context: dict) -> tuple[str, list[str]]:
               pull = pr_context.get("pull_request") or {}
-              title = collapse_ws(pull.get("title", ""))
-              body = truncate(pull.get("body", ""), 220)
+              title = truncate(collapse_ws(pull.get("title", "")), 140)
+              body = extract_pr_body_summary(pull.get("body", ""), 140)
               file_entries = pull.get("files") or []
               files = [norm(entry.get("filename")) for entry in file_entries if norm(entry.get("filename"))]
               summary_bits = []
@@ -629,6 +664,110 @@ jobs:
                       deduped.append(value)
               return deduped[:4]
 
+          def choose_fix_lite_outcome(
+              pr_summary: str,
+              pr_files: list[str],
+              change_areas: list[str],
+              guidance: dict,
+              signal_map: dict,
+              patch_entries: list[dict],
+              changed_file_count: int,
+          ) -> dict:
+              scope = norm(signal_map.get("scope")).lower() or "unknown"
+              change_type = norm(signal_map.get("type")).lower() or "mixed"
+              guidance_categories = guidance.get("categories") or []
+              guidance_summary = guidance.get("summary") or ""
+              files = [norm(name) for name in pr_files if norm(name)]
+              lower_files = [name.lower() for name in files]
+              artifact_only = bool(files) and all(is_artifact_like(name) for name in files)
+              docs_only = bool(files) and all(
+                  name.lower().endswith((".md", ".rst", ".txt")) or "/docs/" in f"/{name.lower()}/" or name.lower().startswith("docs/")
+                  for name in files
+              )
+              workflow_or_config = any(area.lower() in {"ci", "config", "infra", "manifest"} for area in change_areas)
+              validation_only = bool(change_areas) and set(area.lower() for area in change_areas).issubset({"docs", "validation"})
+
+              result = {
+                  "status": "blocked",
+                  "reason": "visible change surface is too broad for a safe suggestion-only fix.",
+                  "target_file": "",
+                  "suggested_direction": "",
+                  "next_step": "`/repobrain ask what should I narrow first?`",
+              }
+
+              if not files and not pr_summary:
+                  result.update(
+                      status="blocked",
+                      reason="visible PR context is too limited for a safe suggestion-only fix.",
+                      next_step="`/repobrain ask what changed here?`",
+                  )
+                  return result
+
+              if "generated-file guidance" in guidance_categories and artifact_only:
+                  result.update(
+                      status="blocked",
+                      reason="repo guidance marks generated or artifact files as non-primary fix focus.",
+                      next_step="`/repobrain ask what should I review manually?`",
+                  )
+                  return result
+
+              if workflow_or_config:
+                  result.update(
+                      status="blocked",
+                      reason="workflow, config, or deployment-style changes are too sensitive for a safe suggestion-only fix here.",
+                      next_step="`/repobrain ask what should I pay attention to here?`",
+                  )
+                  return result
+
+              if scope == "large" or changed_file_count > 4 or change_type == "mixed":
+                  result.update(
+                      status="blocked",
+                      reason="visible change surface is too broad for a safe suggestion-only fix.",
+                      next_step="`/repobrain ask what should I narrow first?`",
+                  )
+                  return result
+
+              if validation_only:
+                  result.update(
+                      status="not_applicable",
+                      reason="visible change appears validation/docs-only and no safe fix target was identified.",
+                      next_step="`/repobrain ask what should I change manually?`",
+                  )
+                  return result
+
+              doc_targets = [
+                  name for name in files
+                  if name.lower().endswith((".md", ".rst", ".txt")) or name.lower() == "readme.md" or name.lower().startswith("docs/")
+              ]
+              if scope == "small" and len(files) == 1 and len(doc_targets) == 1:
+                  target = doc_targets[0]
+                  direction = f"clarify the wording in `{target}` so the visible change intent is more explicit and easier to follow."
+                  if patch_entries:
+                      direction = f"clarify the wording in `{target}` around the visible changed lines so the intent stays explicit and compact."
+                  result.update(
+                      status="suggestion_available",
+                      target_file=target,
+                      suggested_direction=direction,
+                      reason="single documentation file with narrow visible change surface.",
+                      next_step="apply manually, then run `/repobrain review` again.",
+                  )
+                  return result
+
+              if docs_only and scope == "small":
+                  result.update(
+                      status="not_applicable",
+                      reason="visible change appears docs-only and no safe fix target was identified beyond manual wording review.",
+                      next_step="`/repobrain ask what should I change manually?`",
+                  )
+                  return result
+
+              result.update(
+                  status="blocked" if guidance_summary or patch_entries else "not_applicable",
+                  reason="visible context does not identify a narrow manual fix target safely enough.",
+                  next_step="`/repobrain ask what should I narrow first?`" if guidance_summary or patch_entries else "`/repobrain ask what should I change manually?`",
+              )
+              return result
+
           def suggest_next_questions(pr_context_available: bool, has_components: bool) -> str:
               options = []
               if pr_context_available:
@@ -865,6 +1004,38 @@ jobs:
                   lines.append(f"Next safe step: {truncate(next_question, 220)}")
               return "\n".join(lines)
 
+          def render_fix_lite(
+              status_text: str,
+              reason_text: str = "",
+              target_file: str = "",
+              suggested_direction: str = "",
+              guidance_text: str = "",
+              signal_lines: list[tuple[str, str]] | None = None,
+              next_step: str = "",
+          ) -> str:
+              lines = [
+                  "## RepoBrain Fix-Lite",
+                  "Mode: suggestion-only",
+                  f"Status: {status_text}",
+              ]
+              if norm(target_file):
+                  lines.append(f"Target: {target_file}")
+              if norm(suggested_direction):
+                  lines.append(f"Suggested direction: {truncate(suggested_direction, 220)}")
+              elif norm(reason_text):
+                  lines.append(f"Reason: {truncate(reason_text, 220)}")
+              signal_text = format_signal_inline(signal_lines)
+              if signal_text:
+                  lines.append(f"Signal: {signal_text}")
+              if norm(guidance_text):
+                  lines.append(f"Guidance: {truncate(guidance_text, 180)}")
+              if norm(reason_text) and norm(suggested_direction):
+                  lines.append(f"Why bounded: {truncate(reason_text, 180)}")
+              lines.append("No patch was applied. No files were modified.")
+              if norm(next_step):
+                  lines.append(f"Next safe step: {truncate(next_step, 220)}")
+              return "\n".join(lines)
+
           def render_doctor_card(
               workflow_ref: str,
               workflow_path: str,
@@ -879,11 +1050,12 @@ jobs:
                   f"Workflow: {workflow_path or '.github/workflows/repobrain.yml'}",
                   f"Event: {event_name or 'unknown'}",
                   f"Guidance: {guidance_status}",
-                  "Supported: help · doctor · ask · review",
-                  "Unsupported: fix",
+                  "Supported: help · doctor · ask · review · fix-lite",
+                  "Unsupported: out-of-contract commands",
                   "Setup notes:",
                   "- one RepoBrain responder is expected",
                   "- Surface supports bounded read-only Review v1",
+                  "- Fix-Lite is suggestion-only and does not modify files",
                   "- answers use visible repo/PR context only",
                   "- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment",
                   "Next step: /repobrain ask what is this PR about?",
@@ -1057,7 +1229,7 @@ jobs:
               status = "blocked"
               decision = "UNSUPPORTED_COMMAND"
               body = (
-                  "RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, and bounded `/repobrain review`.\n"
+                  "RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, bounded `/repobrain review`, and bounded `/repobrain fix`.\n"
                   f"Received: `/repobrain {cmd}`.\n"
                   "This bounded behavior is intentional for the current external GitHub foundation stage."
               )
@@ -1070,7 +1242,8 @@ jobs:
                   "- `/repobrain help`\n"
                   "- `/repobrain doctor`\n"
                   "- `/repobrain ask <question>`\n"
-                  "- `/repobrain review` - bounded read-only Review v1\n\n"
+                  "- `/repobrain review` - bounded read-only Review v1\n"
+                  "- `/repobrain fix` - bounded Fix-Lite suggestion-only mode\n\n"
                   "Use `/repobrain doctor` to verify the external setup surface.\n\n"
                   "Best first questions:\n"
                   "- `/repobrain ask what does this repository do?`\n"
@@ -1081,11 +1254,12 @@ jobs:
                   "Signal layer:\n"
                   "- ask and review responses include short bounded signals for scope, type, and context strength\n- review keeps changed files, change areas, and bounded observations near the top for fast triage\n\n"
                   "Unsupported (explicitly blocked):\n"
-                  "- `/repobrain fix`\n\n"
+                  "- out-of-contract commands\n\n"
                   "Bounded behavior note:\n"
                   "- answers use visible repo and PR context only\n"
                   "- review is read-only and based on bounded visible PR context only\n"
                   "- review does not generate fixes or claim full review parity\n"
+                  "- Fix-Lite does not apply patches, modify files, or create commits\n"
                   "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
               )
           elif cmd == "doctor":
@@ -1094,6 +1268,9 @@ jobs:
           elif cmd == "review":
               status = "success"
               decision = "REVIEW_V1"
+          elif cmd == "fix":
+              status = "success"
+              decision = "FIX_LITE"
           elif not query:
               status = "blocked"
               decision = "ASK_QUERY_MISSING"
@@ -1153,6 +1330,25 @@ jobs:
                   or review_changed_file_count > len(review_patch_entries)
               )
           )
+          fix_signal_lines = build_signal_lines(
+              "pr",
+              readme_summary_for_review,
+              manifest_summary_for_review,
+              pr_summary_for_audit,
+              pr_files_for_audit,
+              component_names_for_review,
+              pr_context,
+          ) if supported and cmd == "fix" else []
+          fix_signal_map = {label: value for label, value in fix_signal_lines}
+          fix_lite_outcome = choose_fix_lite_outcome(
+              pr_summary_for_audit,
+              pr_files_for_audit,
+              review_change_areas,
+              guidance_context,
+              fix_signal_map,
+              review_patch_entries,
+              review_changed_file_count,
+          ) if supported and cmd == "fix" else {}
 
           if supported and cmd == "ask" and query:
               body = answer_repo_aware(query, repository, repo_root, pr_context)
@@ -1172,6 +1368,16 @@ jobs:
                   review_context_limited=review_context_limited,
                   next_question="`/repobrain ask what changed here?`",
               )
+          elif supported and cmd == "fix":
+              body = render_fix_lite(
+                  fix_lite_outcome.get("status", "blocked").replace("_", " "),
+                  reason_text=fix_lite_outcome.get("reason", ""),
+                  target_file=fix_lite_outcome.get("target_file", ""),
+                  suggested_direction=fix_lite_outcome.get("suggested_direction", ""),
+                  guidance_text=guidance_context.get("summary", ""),
+                  signal_lines=fix_signal_lines,
+                  next_step=fix_lite_outcome.get("next_step", "`/repobrain ask what should I narrow first?`"),
+              )
 
           Path("artifacts/audit").mkdir(parents=True, exist_ok=True)
           Path("artifacts/evidence_pack").mkdir(parents=True, exist_ok=True)
@@ -1189,11 +1395,12 @@ jobs:
                   "repo_aware_compact_v1" if (supported and cmd == "ask" and query)
                   else "doctor_setup_health_v1" if (supported and cmd == "doctor")
                   else "review_v1_read_only" if (supported and cmd == "review")
+                  else "fix_lite_suggestion_only" if (supported and cmd == "fix")
                   else "bounded_foundation_v1"
               ),
               "bounded_scope": {
-                  "supported_commands": ["help", "doctor", "ask", "review"],
-                  "unsupported_commands": ["fix"],
+                  "supported_commands": ["help", "doctor", "ask", "review", "fix"],
+                  "unsupported_commands": ["out_of_contract"],
               },
               "context_summary": {
                   "pr_context_available": bool(pr_context.get("is_pull_request")),
@@ -1205,6 +1412,22 @@ jobs:
                   "guidance_files": guidance_context.get("files") or [],
                   "guidance_categories": guidance_context.get("categories") or [],
                   "guidance_summary": guidance_context.get("summary") or "",
+              },
+              "fix_lite_summary": {
+                  "output_mode": "fix_lite_suggestion_only" if (supported and cmd == "fix") else "n/a",
+                  "fix_lite_status": fix_lite_outcome.get("status", "") if (supported and cmd == "fix") else "",
+                  "fix_lite_reason": fix_lite_outcome.get("reason", "") if (supported and cmd == "fix") else "",
+                  "target_file": fix_lite_outcome.get("target_file", "") if (supported and cmd == "fix") else "",
+                  "change_areas": review_change_areas if (supported and cmd == "fix") else [],
+                  "guidance_found": bool(guidance_context.get("found")) if (supported and cmd == "fix") else False,
+                  "guidance_files": (guidance_context.get("files") or []) if (supported and cmd == "fix") else [],
+                  "signal": fix_signal_map if (supported and cmd == "fix") else {},
+                  "patch_applied": False if (supported and cmd == "fix") else None,
+                  "files_modified": False if (supported and cmd == "fix") else None,
+                  "event_name": event_name or "n/a",
+                  "workflow_path": workflow_path,
+                  "run_id": run_id or "n/a",
+                  "generated_at_utc": now,
               },
               "triage_summary": {
                   "output_mode": "review_v1_read_only" if (supported and cmd == "review") else "n/a",
@@ -1256,6 +1479,7 @@ jobs:
               "command": cmd,
               "bounded_scope": audit["bounded_scope"],
               "guidance_summary": audit["guidance_summary"],
+              "fix_lite_summary": audit["fix_lite_summary"] if (supported and cmd == "fix") else {},
               "triage_summary": audit["triage_summary"] if (supported and cmd == "review") else {},
               "runtime_provenance": audit["runtime_provenance"],
               "generated_at_utc": now,
@@ -1279,8 +1503,8 @@ jobs:
               f"- Status: `{status}`\n"
               f"- Decision: `{decision}`\n"
               f"- Command: `{cmd}`\n"
-              "- Supported scope: `help`, `doctor`, `ask`, `review`\n"
-              "- Unsupported scope: `fix`\n"
+              "- Supported scope: `help`, `doctor`, `ask`, `review`, `fix`\n"
+              "- Unsupported scope: `out_of_contract`\n"
           )
           Path("artifacts/evidence_pack/repobrain_tkya_evidence_pack.md").write_text(evidence_md, encoding="utf-8")
 
