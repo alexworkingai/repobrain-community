@@ -760,30 +760,42 @@ jobs:
           ) -> dict:
               scope = norm(signal_map.get("scope")).lower() or "unknown"
               change_type = norm(signal_map.get("type")).lower() or "mixed"
+              context_strength = norm(signal_map.get("context")).lower() or "weak"
               guidance_categories = guidance.get("categories") or []
               guidance_summary = guidance.get("summary") or ""
               files = [norm(name) for name in pr_files if norm(name)]
-              lower_files = [name.lower() for name in files]
+              lower_areas = {area.lower() for area in change_areas}
               artifact_only = bool(files) and all(is_artifact_like(name) for name in files)
               docs_only = bool(files) and all(
                   name.lower().endswith((".md", ".rst", ".txt")) or "/docs/" in f"/{name.lower()}/" or name.lower().startswith("docs/")
                   for name in files
               )
               workflow_or_config = any(area.lower() in {"ci", "config", "infra", "manifest"} for area in change_areas)
-              validation_only = bool(change_areas) and set(area.lower() for area in change_areas).issubset({"docs", "validation"})
+              validation_only = bool(change_areas) and lower_areas.issubset({"docs", "validation"})
+              code_or_tests_visible = bool(lower_areas.intersection({"src", "tests"}))
 
               result = {
                   "status": "blocked",
-                  "reason": "visible change surface is too broad for a safe suggestion-only fix.",
+                  "reason": "visible change surface is too broad for a safe manual patch suggestion.",
                   "target_file": "",
-                  "suggested_direction": "",
+                  "suggested_change_type": "",
+                  "patch_suggestions": [],
+                  "why_bounded": "",
                   "next_step": "`/repobrain ask what should I narrow first?`",
               }
 
               if not files and not pr_summary:
                   result.update(
                       status="blocked",
-                      reason="visible PR context is too limited for a safe suggestion-only fix.",
+                      reason="visible PR context is too limited for a safe manual patch suggestion.",
+                      next_step="`/repobrain ask what changed here?`",
+                  )
+                  return result
+
+              if context_strength == "weak" and not patch_entries:
+                  result.update(
+                      status="blocked",
+                      reason="visible context is too weak for a safe manual patch suggestion.",
                       next_step="`/repobrain ask what changed here?`",
                   )
                   return result
@@ -796,18 +808,34 @@ jobs:
                   )
                   return result
 
-              if workflow_or_config:
+              if artifact_only:
                   result.update(
                       status="blocked",
-                      reason="workflow, config, or deployment-style changes are too sensitive for a safe suggestion-only fix here.",
-                      next_step="`/repobrain ask what should I pay attention to here?`",
+                      reason="generated or artifact files are not a safe primary target for a manual patch suggestion here.",
+                      next_step="`/repobrain ask what should I review manually?`",
                   )
                   return result
 
-              if scope == "large" or changed_file_count > 4 or change_type == "mixed":
+              if workflow_or_config:
                   result.update(
                       status="blocked",
-                      reason="visible change surface is too broad for a safe suggestion-only fix.",
+                      reason="workflow, config, or deployment-style changes require manual inspection before Fix-Lite can suggest an edit.",
+                      next_step="`/repobrain ask what should I inspect manually?`",
+                  )
+                  return result
+
+              if code_or_tests_visible:
+                  result.update(
+                      status="blocked",
+                      reason="runtime code or test changes need human review before Fix-Lite can suggest a manual patch.",
+                      next_step="`/repobrain ask what should I inspect manually?`",
+                  )
+                  return result
+
+              if scope == "large" or changed_file_count > 4 or change_type == "mixed" or len(lower_areas) > 2:
+                  result.update(
+                      status="blocked",
+                      reason="visible change surface is too broad for a safe manual patch suggestion.",
                       next_step="`/repobrain ask what should I narrow first?`",
                   )
                   return result
@@ -824,16 +852,27 @@ jobs:
                   name for name in files
                   if name.lower().endswith((".md", ".rst", ".txt")) or name.lower() == "readme.md" or name.lower().startswith("docs/")
               ]
-              if scope == "small" and len(files) == 1 and len(doc_targets) == 1:
+              if scope == "small" and len(files) == 1 and len(doc_targets) == 1 and context_strength in {"strong", "moderate"}:
                   target = doc_targets[0]
-                  direction = f"clarify the wording in `{target}` so the visible change intent is more explicit and easier to follow."
+                  suggested_change_type = "validation note wording" if "validation" in lower_areas else "documentation wording"
+                  patch_suggestions = []
+                  if target.lower() == "readme.md":
+                      patch_suggestions.append(f"In `{target}`, clarify the setup or intent wording so the visible PR purpose is explicit.")
+                  elif "validation" in lower_areas:
+                      patch_suggestions.append(f"In `{target}`, make the validation-only intent explicit in the visible wording.")
+                  else:
+                      patch_suggestions.append(f"In `{target}`, clarify the wording around the visible changed lines so the intent reads cleanly.")
                   if patch_entries:
-                      direction = f"clarify the wording in `{target}` around the visible changed lines so the intent stays explicit and compact."
+                      patch_suggestions.append("Keep the edit limited to the visible changed section rather than expanding the scope of the PR.")
+                  if "small-pr preference" in guidance_categories:
+                      patch_suggestions.append("Prefer a minimal wording edit rather than broadening the PR surface.")
                   result.update(
                       status="suggestion_available",
                       target_file=target,
-                      suggested_direction=direction,
-                      reason="single documentation file with narrow visible change surface.",
+                      suggested_change_type=suggested_change_type,
+                      patch_suggestions=patch_suggestions[:3],
+                      reason="single text-based documentation file with narrow visible change surface.",
+                      why_bounded="single text-based documentation file, small visible change surface, no runtime code touched.",
                       next_step="apply manually, then run `/repobrain review` again.",
                   )
                   return result
@@ -848,7 +887,7 @@ jobs:
 
               result.update(
                   status="blocked" if guidance_summary or patch_entries else "not_applicable",
-                  reason="visible context does not identify a narrow manual fix target safely enough.",
+                  reason="visible context does not identify a narrow manual patch target safely enough.",
                   next_step="`/repobrain ask what should I narrow first?`" if guidance_summary or patch_entries else "`/repobrain ask what should I change manually?`",
               )
               return result
@@ -1114,33 +1153,40 @@ jobs:
                   lines.append(f"Next safe step: {truncate(next_question, 220)}")
               return "\n".join(lines)
 
-          def render_fix_lite(
+          def render_fix_lite_candidate(
               status_text: str,
               reason_text: str = "",
               target_file: str = "",
-              suggested_direction: str = "",
+              suggested_change_type: str = "",
+              patch_suggestions: list[str] | None = None,
+              why_bounded: str = "",
               guidance_text: str = "",
               signal_lines: list[tuple[str, str]] | None = None,
               next_step: str = "",
           ) -> str:
               lines = [
-                  "## RepoBrain Fix-Lite",
-                  "Mode: suggestion-only",
+                  "## RepoBrain Fix-Lite Candidate",
+                  "Mode: manual-only patch suggestion",
                   f"Status: {status_text}",
               ]
               if norm(target_file):
                   lines.append(f"Target: {target_file}")
-              if norm(suggested_direction):
-                  lines.append(f"Suggested direction: {truncate(suggested_direction, 220)}")
+              if norm(suggested_change_type):
+                  lines.append(f"Suggested change type: {truncate(suggested_change_type, 120)}")
+              compact_suggestions = [truncate(item, 180) for item in (patch_suggestions or []) if norm(item)]
+              if compact_suggestions:
+                  lines.append("Patch suggestion:")
+                  for item in compact_suggestions[:3]:
+                      lines.append(f"- {item}")
               elif norm(reason_text):
                   lines.append(f"Reason: {truncate(reason_text, 220)}")
               signal_text = format_signal_inline(signal_lines)
-              if signal_text:
-                  lines.append(f"Signal: {signal_text}")
+              if norm(why_bounded):
+                  lines.append(f"Why bounded: {truncate(why_bounded, 220)}")
               if norm(guidance_text):
                   lines.append(f"Guidance: {truncate(guidance_text, 180)}")
-              if norm(reason_text) and norm(suggested_direction):
-                  lines.append(f"Why bounded: {truncate(reason_text, 180)}")
+              if signal_text:
+                  lines.append(f"Signal: {signal_text}")
               lines.append("No patch was applied. No files were modified.")
               if norm(next_step):
                   lines.append(f"Next safe step: {truncate(next_step, 220)}")
@@ -1160,12 +1206,12 @@ jobs:
                   f"Workflow: {workflow_path or '.github/workflows/repobrain.yml'}",
                   f"Event: {event_name or 'unknown'}",
                   f"Guidance: {guidance_status}",
-                  "Supported: help · doctor · ask · review · fix-lite",
+                  "Supported: help · doctor · ask · review · fix-lite-candidate",
                   "Unsupported: out-of-contract commands",
                   "Setup notes:",
                   "- one RepoBrain responder is expected",
                   "- Surface supports bounded read-only Review Candidate",
-                  "- Fix-Lite is suggestion-only and does not modify files",
+                  "- Fix-Lite Candidate is manual-only and does not apply patches, modify files, or create commits",
                   "- answers use visible repo/PR context only",
                   "- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment",
                   "Next step: /repobrain ask what is this PR about?",
@@ -1353,7 +1399,7 @@ jobs:
                   "- `/repobrain doctor`\n"
                   "- `/repobrain ask <question>`\n"
                   "- `/repobrain review` - bounded read-only Review Candidate\n"
-                  "- `/repobrain fix` - bounded Fix-Lite suggestion-only mode\n\n"
+                  "- `/repobrain fix` - bounded Fix-Lite Candidate manual patch suggestion\n\n"
                   "Use `/repobrain doctor` to verify the external setup surface.\n\n"
                   "Best first questions:\n"
                   "- `/repobrain ask what does this repository do?`\n"
@@ -1369,7 +1415,7 @@ jobs:
                   "- answers use visible repo and PR context only\n"
                   "- review is read-only and based on bounded visible PR context, limited diff context, and repo guidance only\n"
                   "- review does not generate fixes or claim full review parity\n"
-                  "- Fix-Lite does not apply patches, modify files, or create commits\n"
+                  "- Fix-Lite Candidate is manual-only and does not apply patches, modify files, or create commits\n"
                   "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
               )
           elif cmd == "doctor":
@@ -1380,7 +1426,7 @@ jobs:
               decision = "REVIEW_CANDIDATE"
           elif cmd == "fix":
               status = "success"
-              decision = "FIX_LITE"
+              decision = "FIX_LITE_CANDIDATE"
           elif not query:
               status = "blocked"
               decision = "ASK_QUERY_MISSING"
@@ -1504,11 +1550,13 @@ jobs:
                   next_question="`/repobrain fix`",
               )
           elif supported and cmd == "fix":
-              body = render_fix_lite(
+              body = render_fix_lite_candidate(
                   fix_lite_outcome.get("status", "blocked").replace("_", " "),
                   reason_text=fix_lite_outcome.get("reason", ""),
                   target_file=fix_lite_outcome.get("target_file", ""),
-                  suggested_direction=fix_lite_outcome.get("suggested_direction", ""),
+                  suggested_change_type=fix_lite_outcome.get("suggested_change_type", ""),
+                  patch_suggestions=fix_lite_outcome.get("patch_suggestions", []),
+                  why_bounded=fix_lite_outcome.get("why_bounded", ""),
                   guidance_text=guidance_context.get("summary", ""),
                   signal_lines=fix_signal_lines,
                   next_step=fix_lite_outcome.get("next_step", "`/repobrain ask what should I narrow first?`"),
@@ -1530,7 +1578,7 @@ jobs:
                   "repo_aware_compact_v1" if (supported and cmd == "ask" and query)
                   else "doctor_setup_health_v1" if (supported and cmd == "doctor")
                   else "review_candidate_read_only" if (supported and cmd == "review")
-                  else "fix_lite_suggestion_only" if (supported and cmd == "fix")
+                  else "fix_lite_candidate_manual_only" if (supported and cmd == "fix")
                   else "bounded_foundation_v1"
               ),
               "bounded_scope": {
@@ -1549,16 +1597,21 @@ jobs:
                   "guidance_summary": guidance_context.get("summary") or "",
               },
               "fix_lite_summary": {
-                  "output_mode": "fix_lite_suggestion_only" if (supported and cmd == "fix") else "n/a",
+                  "output_mode": "fix_lite_candidate_manual_only" if (supported and cmd == "fix") else "n/a",
                   "fix_lite_status": fix_lite_outcome.get("status", "") if (supported and cmd == "fix") else "",
                   "fix_lite_reason": fix_lite_outcome.get("reason", "") if (supported and cmd == "fix") else "",
                   "target_file": fix_lite_outcome.get("target_file", "") if (supported and cmd == "fix") else "",
+                  "suggested_change_type": fix_lite_outcome.get("suggested_change_type", "") if (supported and cmd == "fix") else "",
+                  "patch_suggestion_count": len(fix_lite_outcome.get("patch_suggestions", []) or []) if (supported and cmd == "fix") else 0,
+                  "why_bounded": fix_lite_outcome.get("why_bounded", "") if (supported and cmd == "fix") else "",
                   "change_areas": review_change_areas if (supported and cmd == "fix") else [],
                   "guidance_found": bool(guidance_context.get("found")) if (supported and cmd == "fix") else False,
                   "guidance_files": (guidance_context.get("files") or []) if (supported and cmd == "fix") else [],
                   "signal": fix_signal_map if (supported and cmd == "fix") else {},
                   "patch_applied": False if (supported and cmd == "fix") else None,
                   "files_modified": False if (supported and cmd == "fix") else None,
+                  "commit_created": False if (supported and cmd == "fix") else None,
+                  "branch_pushed": False if (supported and cmd == "fix") else None,
                   "event_name": event_name or "n/a",
                   "workflow_path": workflow_path,
                   "run_id": run_id or "n/a",

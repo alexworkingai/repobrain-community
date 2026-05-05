@@ -17,12 +17,12 @@ What works now:
 - `/repobrain doctor`
 - `/repobrain ask ...`
 - `/repobrain review` as bounded read-only Review Candidate
-- `/repobrain fix` as bounded Fix-Lite suggestion-only mode
+- `/repobrain fix` as bounded Fix-Lite Candidate manual patch suggestion
 - optional repo guidance from `.github/repobrain.instructions.md` or `AGENTS.md`
 
 Known limits:
 
-- Fix-Lite is suggestion-only and may return `blocked` or `not applicable`
+- Fix-Lite Candidate is manual-only and may return `suggestion available`, `blocked`, or `not applicable`
 - no patch application, file modification, commit creation, branch push, or PR creation
 - Review Candidate is bounded and read-only
 - output quality depends on visible PR/repo context
@@ -38,7 +38,7 @@ Supported:
 - `/repobrain doctor`
 - `/repobrain ask ...`
 - `/repobrain review` as bounded read-only Review Candidate
-- `/repobrain fix` as bounded Fix-Lite suggestion-only mode
+- `/repobrain fix` as bounded Fix-Lite Candidate manual patch suggestion
 
 Unsupported:
 
@@ -87,12 +87,12 @@ Optional repo guidance:
 5. Run `/repobrain ask what is this PR about?`
 6. Run `/repobrain review`
 7. Run `/repobrain fix`
-8. Interpret the Fix-Lite outcome
+8. Interpret the Fix-Lite Candidate outcome
 
-Fix-Lite outcomes:
+Fix-Lite Candidate outcomes:
 
-- `suggestion available` means RepoBrain found a narrow manual direction worth trying
-- `blocked` means the visible scope is too broad or sensitive for a safe suggestion-only fix
+- `suggestion available` means RepoBrain found a narrow manual patch direction worth trying
+- `blocked` means the visible scope is too broad or sensitive for a safe manual patch suggestion
 - `not applicable` means no safe manual target was identifiable from bounded visible context
 
 Blocked and not-applicable outcomes are healthy bounded behavior, not necessarily errors.
@@ -130,12 +130,12 @@ Host: repobrain-community@main
 Workflow: .github/workflows/repobrain.yml
 Event: issue_comment
 Guidance: found .github/repobrain.instructions.md
-Supported: help · doctor · ask · review · fix-lite
+Supported: help · doctor · ask · review · fix-lite-candidate
 Unsupported: out-of-contract commands
 Setup notes:
 - one RepoBrain responder is expected
 - Surface supports bounded read-only Review Candidate
-- Fix-Lite is suggestion-only and does not modify files
+- Fix-Lite Candidate is manual-only and does not apply patches, modify files, or create commits
 - answers use visible repo/PR context only
 - if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment
 Next step: /repobrain ask what is this PR about?
@@ -146,10 +146,10 @@ Next step: /repobrain ask what is this PR about?
 ```text
 ## RepoBrain Review Candidate
 PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
-Signal: basis=PR В· scope=small В· type=docs В· context=strong
+Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
 Change areas: docs / validation
-Guidance: repo instructions mark deployment/config changes as caution areas
+Guidance: prefer small PRs for external RepoBrain validation.
 Attention: low based on visible change surface
 
 Review focus:
@@ -176,14 +176,19 @@ Next safe step: /repobrain fix
 `/repobrain fix`
 
 ```text
-## RepoBrain Fix-Lite
-Mode: suggestion-only
-Status: not applicable
-Reason: visible change appears validation/docs-only and no safe fix target was identified.
-Signal: basis=PR · scope=small · type=docs · context=strong
+## RepoBrain Fix-Lite Candidate
+Mode: manual-only patch suggestion
+Status: suggestion available
+Target: README.md
+Suggested change type: documentation wording
+Patch suggestion:
+- In `README.md`, clarify the setup step to mention copying `templates/repobrain.yml`.
+- Keep the edit limited to the visible changed section rather than expanding the PR scope.
+Why bounded: single text-based documentation file, small visible change surface, no runtime code touched.
 Guidance: prefer small PRs for external RepoBrain validation.
+Signal: basis=PR · scope=small · type=docs · context=strong
 No patch was applied. No files were modified.
-Next safe step: /repobrain ask what should I change manually?
+Next safe step: apply manually, then run /repobrain review again.
 ```
 
 ## Community Trial Checklist
@@ -219,11 +224,11 @@ If you want a ready-made report format, use `.github/ISSUE_TEMPLATE/repobrain-co
 
 | Command | Expected result |
 |---|---|
-| `/repobrain doctor` | One response, guidance status shown if present, supported commands include fix-lite |
+| `/repobrain doctor` | One response, guidance status shown if present, supported commands include fix-lite-candidate |
 | `/repobrain help` | One response, command truth matches current bounded surface |
 | `/repobrain ask what is this PR about?` | One response, compact PR-aware answer |
 | `/repobrain review` | One response, Review Candidate card with focus, observations, manual inspection points, and evidence |
-| `/repobrain fix` | One response, Fix-Lite card with no-action guarantee |
+| `/repobrain fix` | One response, Fix-Lite Candidate card with no-action guarantee |
 
 Also verify:
 
@@ -238,15 +243,14 @@ Also verify:
 - Repo guidance is optional and limited to `.github/repobrain.instructions.md` and `AGENTS.md`.
 - Review Candidate is bounded read-only external review.
 - Review Candidate uses visible PR context, limited diff context, and repo guidance.
-- Fix-Lite is bounded suggestion-only external guidance.
+- Fix-Lite Candidate is bounded manual-only patch suggestion guidance.
 - Ask and review use visible repo/PR context only.
-- Fix-Lite does not apply patches, modify files, or create commits.
+- Fix-Lite Candidate does not apply patches, modify files, create commits, push branches, or open PRs.
 - No full external review parity is claimed.
 - No bug finding claims are made.
 - No vulnerability/security claims are made.
 - No patch generation or autofix behavior is performed.
 - No autonomous agent behavior is claimed.
-
 
 ## Optional Repo Guidance Example
 
