@@ -11,4 +11,4 @@ Build/test hints:
 
 Rules:
 - Keep review bounded and read-only.
-- Treat Fix-Lite suggestions as manual-only guidance.
+- Treat Fix-Lite Candidate suggestions as manual-only guidance.
