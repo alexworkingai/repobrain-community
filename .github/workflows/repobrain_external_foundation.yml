@@ -162,6 +162,8 @@ jobs:
                     status: String(file.status || "").trim(),
                     additions: Number(file.additions || 0),
                     deletions: Number(file.deletions || 0),
+                    patch_available: Boolean(file.patch),
+                    patch_excerpt: String(file.patch || "").trim().slice(0, 1000),
                   })),
                 };
               } catch (error) {
@@ -370,6 +372,11 @@ jobs:
                   return count
               return len(pr_files)
 
+          def extract_pr_file_entries(pr_context: dict) -> list[dict]:
+              pull = pr_context.get("pull_request") or {}
+              entries = pull.get("files") or []
+              return [entry for entry in entries if isinstance(entry, dict) and norm(entry.get("filename"))]
+
           def format_changed_files(pr_files: list[str], total_count: int = 0) -> str:
               if not pr_files:
                   return ""
@@ -422,6 +429,21 @@ jobs:
               if not change_areas:
                   return ""
               return " / ".join(change_areas)
+
+          def is_artifact_like(name: str) -> bool:
+              lowered = norm(name).lower()
+              if not lowered:
+                  return False
+              artifact_tokens = (
+                  "artifacts/",
+                  "dist/",
+                  "build/",
+                  "coverage/",
+                  "__snapshots__/",
+                  ".min.",
+                  ".map",
+              )
+              return any(token in lowered for token in artifact_tokens)
 
           def discover_guidance_files(repo_root: Path) -> list[Path]:
               found = []
@@ -515,6 +537,97 @@ jobs:
               if not files:
                   return "not found"
               return "found " + " · ".join(files[:2])
+
+          def collect_bounded_diff_context(pr_context: dict, guidance: dict, limit_files: int = 6, total_char_limit: int = 5000) -> tuple[list[dict], bool]:
+              selected = []
+              total_chars = 0
+              entries = extract_pr_file_entries(pr_context)
+              prefer_skip_artifacts = "generated-file guidance" in (guidance.get("categories") or [])
+              for entry in entries:
+                  filename = norm(entry.get("filename"))
+                  patch_excerpt = norm(entry.get("patch_excerpt"))
+                  if not filename or not patch_excerpt:
+                      continue
+                  if prefer_skip_artifacts and is_artifact_like(filename):
+                      continue
+                  next_total = total_chars + len(patch_excerpt)
+                  if selected and next_total > total_char_limit:
+                      break
+                  selected.append(
+                      {
+                          "filename": filename,
+                          "patch_excerpt": patch_excerpt[:1000],
+                      }
+                  )
+                  total_chars += len(patch_excerpt)
+                  if len(selected) >= limit_files or total_chars >= total_char_limit:
+                      break
+              diff_context_available = bool(selected)
+              return selected, diff_context_available
+
+          def build_review_observations(
+              pr_summary: str,
+              pr_files: list[str],
+              change_areas: list[str],
+              guidance: dict,
+              signal_map: dict,
+              patch_entries: list[dict],
+              changed_file_count: int,
+          ) -> list[str]:
+              observations = []
+              scope = norm(signal_map.get("scope")).lower() or "unknown"
+              change_type = norm(signal_map.get("type")).lower() or "mixed"
+              guidance_categories = guidance.get("categories") or []
+              guidance_hints = guidance.get("relevant_hints") or []
+              change_areas_text = format_change_areas(change_areas)
+              has_artifact_files = any(is_artifact_like(name) for name in pr_files)
+
+              if change_areas_text:
+                  if scope in {"small", "medium", "large"}:
+                      observations.append(
+                          f"This PR appears {scope} and {change_type}-oriented based on visible changed files in {change_areas_text}."
+                      )
+                  else:
+                      observations.append(
+                          f"Visible changed files cluster around {change_areas_text} in this bounded review."
+                      )
+              elif pr_files:
+                  observations.append(
+                      f"This PR appears {scope if scope != 'unknown' else 'limited-scope'} and {change_type}-oriented based on visible changed files."
+                  )
+              elif pr_summary:
+                  observations.append("Visible PR metadata is present, but changed-file context is thin in this bounded review.")
+
+              if "small-pr preference" in guidance_categories and scope == "small":
+                  observations.append("Repo guidance prefers small PRs, and this change surface appears small.")
+              elif "deployment/config caution" in guidance_categories and any(area.lower() in {"config", "infra", "ci", "manifest"} for area in change_areas):
+                  observations.append("Repo guidance marks workflow, config, or deployment-style changes as attention areas here.")
+              elif guidance_hints:
+                  observations.append(truncate(f"Repo guidance highlight: {guidance_hints[0]}", 170))
+
+              if "generated-file guidance" in guidance_categories and has_artifact_files:
+                  observations.append("Repo guidance says generated or artifact files should not drive review focus if they appear in the PR.")
+
+              if patch_entries:
+                  filenames = ", ".join(f"`{entry['filename']}`" for entry in patch_entries[:2])
+                  observations.append(
+                      truncate(
+                          f"Small visible diff snippets were available for {filenames}, so this review adds only surface-level observations from limited content context.",
+                          175,
+                      )
+                  )
+              else:
+                  observations.append("Visible diff/content context is limited here, so deeper conclusions would be out of scope.")
+
+              if not pr_files and not pr_summary:
+                  observations.append("This review falls back to sparse visible PR context only.")
+
+              deduped = []
+              for item in observations:
+                  value = norm(item)
+                  if value and value not in deduped:
+                      deduped.append(value)
+              return deduped[:4]
 
           def suggest_next_questions(pr_context_available: bool, has_components: bool) -> str:
               options = []
@@ -715,18 +828,19 @@ jobs:
                   ("context", infer_signal_context_strength(readme_summary, manifest_summary, pr_summary, pr_files, component_names, basis="mixed")),
               ]
 
-          def render_review_lite(
+          def render_review_v1(
               pr_summary: str,
               signal_lines: list[tuple[str, str]],
               files_text: str,
               change_areas_text: str = "",
               guidance_text: str = "",
-              note: str = "",
+              observations: list[str] | None = None,
+              review_context_limited: bool = False,
               next_question: str = "",
           ) -> str:
-              summary_text = pr_summary or "Visible PR context is limited, so this Review-Lite card is based on sparse PR metadata only."
+              summary_text = pr_summary or "Visible PR context is limited, so this bounded review stays close to sparse PR metadata only."
               lines = [
-                  "## RepoBrain Review-Lite",
+                  "## RepoBrain Review",
                   f"PR Summary: {truncate(summary_text, 300)}",
               ]
               signal_text = format_signal_inline(signal_lines)
@@ -738,9 +852,15 @@ jobs:
                   lines.append(f"Change areas: {truncate(change_areas_text, 180)}")
               if norm(guidance_text):
                   lines.append(f"Guidance: {truncate(guidance_text, 180)}")
-              lines.append("Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed")
-              if norm(note):
-                  lines.append(f"Note: {truncate(note, 220)}")
+              review_observations = [truncate(item, 185) for item in (observations or []) if norm(item)]
+              if review_observations:
+                  lines.append("Review observations:")
+                  for item in review_observations[:4]:
+                      lines.append(f"- {item}")
+              if review_context_limited:
+                  lines.append("Bounded limits: read-only review; visible diff/content context is limited; no fix generation or security verdict.")
+              else:
+                  lines.append("Bounded limits: read-only review; no fix generation; no security verdict.")
               if norm(next_question):
                   lines.append(f"Next safe step: {truncate(next_question, 220)}")
               return "\n".join(lines)
@@ -759,11 +879,11 @@ jobs:
                   f"Workflow: {workflow_path or '.github/workflows/repobrain.yml'}",
                   f"Event: {event_name or 'unknown'}",
                   f"Guidance: {guidance_status}",
-                  "Supported: help · doctor · ask · review-lite",
+                  "Supported: help · doctor · ask · review",
                   "Unsupported: fix",
                   "Setup notes:",
                   "- one RepoBrain responder is expected",
-                  "- Review-Lite is fast read-only PR triage",
+                  "- Surface supports bounded read-only Review v1",
                   "- answers use visible repo/PR context only",
                   "- if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment",
                   "Next step: /repobrain ask what is this PR about?",
@@ -950,7 +1070,7 @@ jobs:
                   "- `/repobrain help`\n"
                   "- `/repobrain doctor`\n"
                   "- `/repobrain ask <question>`\n"
-                  "- `/repobrain review` - fast bounded Review-Lite PR triage\n\n"
+                  "- `/repobrain review` - bounded read-only Review v1\n\n"
                   "Use `/repobrain doctor` to verify the external setup surface.\n\n"
                   "Best first questions:\n"
                   "- `/repobrain ask what does this repository do?`\n"
@@ -959,13 +1079,13 @@ jobs:
                   "Repo guidance:\n"
                   "- RepoBrain can use `.github/repobrain.instructions.md` or `AGENTS.md` when present\n\n"
                   "Signal layer:\n"
-                  "- ask and Review-Lite responses include short bounded signals for scope, type, and context strength\n- Review-Lite keeps changed files and change areas near the top for fast PR triage\n\n"
+                  "- ask and review responses include short bounded signals for scope, type, and context strength\n- review keeps changed files, change areas, and bounded observations near the top for fast triage\n\n"
                   "Unsupported (explicitly blocked):\n"
                   "- `/repobrain fix`\n\n"
                   "Bounded behavior note:\n"
                   "- answers use visible repo and PR context only\n"
-                  "- Review-Lite is read-only and based on visible PR context only\n"
-                  "- Review-Lite does not generate fixes or claim full review parity\n"
+                  "- review is read-only and based on bounded visible PR context only\n"
+                  "- review does not generate fixes or claim full review parity\n"
                   "- when that context is thin, RepoBrain will say so and suggest a sharper next question\n"
               )
           elif cmd == "doctor":
@@ -973,7 +1093,7 @@ jobs:
               decision = "DOCTOR"
           elif cmd == "review":
               status = "success"
-              decision = "REVIEW_LITE"
+              decision = "REVIEW_V1"
           elif not query:
               status = "blocked"
               decision = "ASK_QUERY_MISSING"
@@ -1005,6 +1125,7 @@ jobs:
           review_changed_file_count = extract_changed_file_count(pr_context, pr_files_for_audit)
           review_change_areas = infer_change_areas(pr_files_for_audit)
           guidance_context = build_guidance_context(repo_root, pr_files_for_audit, review_change_areas)
+          review_patch_entries, diff_context_available = collect_bounded_diff_context(pr_context, guidance_context)
           review_signal_lines = build_signal_lines(
               "pr",
               readme_summary_for_review,
@@ -1015,6 +1136,23 @@ jobs:
               pr_context,
           ) if supported and cmd == "review" else []
           review_signal_map = {label: value for label, value in review_signal_lines}
+          review_observations = build_review_observations(
+              pr_summary_for_audit,
+              pr_files_for_audit,
+              review_change_areas,
+              guidance_context,
+              review_signal_map,
+              review_patch_entries,
+              review_changed_file_count,
+          ) if supported and cmd == "review" else []
+          review_context_limited = bool(
+              supported
+              and cmd == "review"
+              and (
+                  not diff_context_available
+                  or review_changed_file_count > len(review_patch_entries)
+              )
+          )
 
           if supported and cmd == "ask" and query:
               body = answer_repo_aware(query, repository, repo_root, pr_context)
@@ -1023,17 +1161,15 @@ jobs:
           elif supported and cmd == "review":
               files_text = format_changed_files(pr_files_for_audit, review_changed_file_count)
               change_areas_text = format_change_areas(review_change_areas)
-              review_note = ""
-              if not pr_summary_for_audit:
-                  review_note = "Visible PR title/body context is thin in this bounded external path."
               review_guidance = guidance_context.get("summary") or ""
-              body = render_review_lite(
+              body = render_review_v1(
                   pr_summary_for_audit,
                   review_signal_lines,
                   files_text,
                   change_areas_text=change_areas_text,
                   guidance_text=review_guidance,
-                  note=review_note,
+                  observations=review_observations,
+                  review_context_limited=review_context_limited,
                   next_question="`/repobrain ask what changed here?`",
               )
 
@@ -1052,7 +1188,7 @@ jobs:
               "answer_mode": (
                   "repo_aware_compact_v1" if (supported and cmd == "ask" and query)
                   else "doctor_setup_health_v1" if (supported and cmd == "doctor")
-                  else "review_lite_pr_triage_v1" if (supported and cmd == "review")
+                  else "review_v1_read_only" if (supported and cmd == "review")
                   else "bounded_foundation_v1"
               ),
               "bounded_scope": {
@@ -1071,10 +1207,15 @@ jobs:
                   "guidance_summary": guidance_context.get("summary") or "",
               },
               "triage_summary": {
-                  "output_mode": "fast_triage_review_lite_v1" if (supported and cmd == "review") else "n/a",
+                  "output_mode": "review_v1_read_only" if (supported and cmd == "review") else "n/a",
                   "changed_file_count": review_changed_file_count if (supported and cmd == "review") else 0,
                   "changed_files_sample": pr_files_for_audit[:4] if (supported and cmd == "review") else [],
                   "change_areas": review_change_areas if (supported and cmd == "review") else [],
+                  "guidance_found": bool(guidance_context.get("found")) if (supported and cmd == "review") else False,
+                  "guidance_files": (guidance_context.get("files") or []) if (supported and cmd == "review") else [],
+                  "review_context_limited": review_context_limited if (supported and cmd == "review") else False,
+                  "review_observation_count": len(review_observations) if (supported and cmd == "review") else 0,
+                  "diff_context_available": diff_context_available if (supported and cmd == "review") else False,
                   "signal": review_signal_map if (supported and cmd == "review") else {},
                   "event_name": event_name or "n/a",
                   "workflow_path": workflow_path,

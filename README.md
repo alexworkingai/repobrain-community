@@ -16,7 +16,7 @@ Supported:
 - `/repobrain help`
 - `/repobrain doctor`
 - `/repobrain ask ...`
-- `/repobrain review` as fast bounded Review-Lite PR triage
+- `/repobrain review` as bounded read-only Review v1
 
 Unsupported:
 
@@ -88,11 +88,11 @@ Host: repobrain-community@main
 Workflow: .github/workflows/repobrain.yml
 Event: issue_comment
 Guidance: found .github/repobrain.instructions.md
-Supported: help · doctor · ask · review-lite
+Supported: help · doctor · ask · review
 Unsupported: fix
 Setup notes:
 - one RepoBrain responder is expected
-- Review-Lite is fast read-only PR triage
+- Surface supports bounded read-only Review v1
 - answers use visible repo/PR context only
 - if duplicate comments appear, check that only one workflow listens to `/repobrain` issue_comment
 Next step: /repobrain ask what is this PR about?
@@ -101,20 +101,23 @@ Next step: /repobrain ask what is this PR about?
 `/repobrain review`
 
 ```text
-## RepoBrain Review-Lite
+## RepoBrain Review
 PR Summary: Add TRIAL_PR_MARKER.md for validation PR marker.
 Signal: basis=PR · scope=small · type=docs · context=strong
 Changed files: TRIAL_PR_MARKER.md
 Change areas: docs / validation
 Guidance: repo instructions mark deployment/config changes as caution areas
-Watch points: read-only triage based on visible PR context; no deep code review, fix generation, or security claims performed
+Review observations:
+- This PR appears validation-only and low-scope based on visible changed files.
+- Repo guidance prefers small PRs for external validation, which matches this change.
+Bounded limits: read-only review; no fix generation; no security verdict.
 Next safe step: /repobrain ask what changed here?
 ```
 
 `/repobrain fix`
 
 ```text
-RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, and fast bounded `/repobrain review`.
+RepoBrain external GitHub mode foundation currently supports `/repobrain help`, `/repobrain doctor`, `/repobrain ask`, and bounded `/repobrain review`.
 Received: `/repobrain fix`.
 This bounded behavior is intentional for the current external GitHub foundation stage.
 ```
@@ -138,8 +141,8 @@ This bounded behavior is intentional for the current external GitHub foundation 
 - `/repobrain doctor` verifies the external setup surface only.
 - `/repobrain doctor` does not repair workflows or installation problems.
 - Repo guidance is optional and limited to `.github/repobrain.instructions.md` and `AGENTS.md`.
-- Review-Lite is fast read-only PR triage.
-- Ask and Review-Lite use visible repo/PR context only.
+- Review v1 is bounded read-only external review.
+- Ask and review use visible repo/PR context only.
 - No full external review parity is claimed.
 - No bug finding claims are made.
 - No vulnerability/security claims are made.
