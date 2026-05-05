@@ -8,3 +8,7 @@ Review priorities:
 Build/test hints:
 - Run npm test for app changes.
 - Run npm run lint for TypeScript changes.
+
+Rules:
+- Keep review bounded and read-only.
+- Treat Fix-Lite suggestions as manual-only guidance.
