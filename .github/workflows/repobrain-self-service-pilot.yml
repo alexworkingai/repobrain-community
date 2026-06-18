@@ -1,4 +1,4 @@
-name: RepoBrain self-service pilot
+name: RepoBrain trusted partner 94E
 
 on:
   issue_comment:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "true = print only, false = post comment"
+        description: "true = print only, false = post queue acknowledgement"
         required: false
         default: "false"
         type: string
@@ -24,8 +24,7 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write
-  id-token: write
+  pull-requests: read
 
 jobs:
   repobrain:
@@ -39,41 +38,14 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/github-script@v9
-        id: checkout_ref
-        with:
-          script: |
-            let ref = context.sha;
-            let reason = "default_workflow_sha";
-            if (context.eventName === "issue_comment" && context.payload.issue?.pull_request) {
-              const owner = context.repo.owner;
-              const repo = context.repo.repo;
-              const pullNumber = Number(context.payload.issue.number);
-              const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: pullNumber });
-              const baseRepo = `${owner}/${repo}`.toLowerCase();
-              const headRepo = String(pull.head?.repo?.full_name || "").toLowerCase();
-              const headSha = String(pull.head?.sha || "").trim();
-              if (headRepo === baseRepo && headSha && String(pull.state || "").toLowerCase() === "open") {
-                ref = headSha;
-                reason = "same_repo_pr_head_sha";
-              }
-            }
-            core.info(`RepoBrain checkout ref resolution: ${reason} -> ${ref}`);
-            core.setOutput("ref", ref);
-      - name: Checkout target repository
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ steps.checkout_ref.outputs.ref }}
-          fetch-depth: 0
-      - name: Run RepoBrain self-service
-        uses: alexworkingai/RepoBrain-Action@6b38224bb90adaed41832663112d2437411b12bf
+      - name: Queue RepoBrain request
+        uses: alexworkingai/RepoBrain-Action@951db370b7d1621243bb1fb79ff5100459fa8af6
         with:
           dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
           comment_text: ${{ github.event_name == 'workflow_dispatch' && inputs.comment_text || github.event.comment.body }}
           issue_number: ${{ github.event_name == 'workflow_dispatch' && inputs.issue_number || github.event.issue.number }}
           profile: partner-pilot
           terms_accepted: "true"
-          oidc_audience: repobrain-api
-          self_service_mode: "true"
-          api_url: ${{ vars.REPOBRAIN_HOSTED_API_URL }}
+          transport_mode: github_app_queue
